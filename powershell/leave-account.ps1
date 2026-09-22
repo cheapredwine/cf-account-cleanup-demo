@@ -18,7 +18,8 @@ if ([string]::IsNullOrWhiteSpace($TargetName)) {
 }
 
 Write-Host "== Find membership for account '$TargetName' =="
-$mem = Invoke-CfApi GET "/memberships?per_page=50"
+$mem = Invoke-CfApiAll GET "/memberships"
+if ($mem.Status -ne 200) { Write-Host "ERROR: memberships listing returned HTTP $($mem.Status)" -ForegroundColor Red; exit 1 }
 $entry = $mem.Json.result | Where-Object { $_.account.name -ceq $TargetName } | Select-Object -First 1
 if (-not $entry) {
     Write-Host "No membership found for that name. Nothing to do."
@@ -39,7 +40,8 @@ Write-Host ("success={0}  errors={1}" -f $d.Json.success, (Get-ErrorSummary $d.J
 
 Write-Host ""
 Write-Host "== Verification: membership should be gone =="
-$v = Invoke-CfApi GET "/memberships?per_page=50"
+$v = Invoke-CfApiAll GET "/memberships"
+if ($v.Status -ne 200) { Write-Host "ERROR: memberships listing returned HTTP $($v.Status)" -ForegroundColor Red; exit 1 }
 $still = $v.Json.result | Where-Object { $_.account.name -ceq $TargetName }
 if (-not $still) {
     Write-Host "membership removed - account no longer listed for this user"

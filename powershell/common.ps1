@@ -56,6 +56,34 @@ function Invoke-CfApi {
     return @{ Status = [int]$resp.StatusCode; Json = $json }
 }
 
+# Invoke-CfApiAll METHOD PATH — fetch ALL pages (50/page) of a list endpoint.
+# Returns @{ Status; Json = @{ result = merged; result_info = last page's } }.
+# PATH must not embed page/per_page (this helper owns paging).
+# Any non-200 page: Status = that code, Json = $null, error to host. Never throws.
+function Invoke-CfApiAll {
+    param([Parameter(Mandatory = $true)][string]$Method,
+          [Parameter(Mandatory = $true)][string]$Path)
+    # .Contains, not -like "*?*": in -like patterns "?" is a WILDCARD, so every
+    # path would match and the helper would append "&" instead of "?".
+    $sep = if ($Path.Contains("?")) { "&" } else { "?" }
+    $page = 1
+    $all = @()
+    $info = $null
+    while ($true) {
+        $r = Invoke-CfApi $Method "$Path${sep}page=$page&per_page=50"
+        if ($r.Status -ne 200) {
+            Write-Host "ERROR: $Path page $page returned HTTP $($r.Status)" -ForegroundColor Red
+            return @{ Status = $r.Status; Json = $null }
+        }
+        $all += @($r.Json.result)
+        $info = $r.Json.result_info
+        $totalPages = if ($info -and $info.total_pages) { [int]$info.total_pages } else { 1 }
+        if ($page -ge $totalPages) { break }
+        $page++
+    }
+    return @{ Status = 200; Json = [pscustomobject]@{ result = $all; result_info = $info } }
+}
+
 # Get-ErrorSummary -Json <parsed cloudflare body> — "msg1; msg2" or "".
 function Get-ErrorSummary {
     param([AllowNull()][object]$Json)
@@ -64,9 +92,14 @@ function Get-ErrorSummary {
 
 # Confirm-OrAbort -Prompt "..." -Expected "TEXT"
 # Requires the operator to type EXPECTED_TEXT exactly (case-sensitive, like bash ==).
+# Rejects piped/redirected stdin and non-interactive sessions.
 function Confirm-OrAbort {
     param([Parameter(Mandatory = $true)][string]$Prompt,
           [Parameter(Mandatory = $true)][string]$Expected)
+    if ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive) {
+        Write-Host "Aborted: confirmation must come from an interactive terminal - piped stdin is rejected. Nothing was done." -ForegroundColor Red
+        exit 1
+    }
     $answer = Read-Host $Prompt
     if ($answer -cne $Expected) {
         Write-Host "Aborted: confirmation text did not match. Nothing was done."

@@ -17,6 +17,8 @@
 #   * Subscriptions: the Tenant docs do not list them as a manual pre-delete,
 #     but in practice leftover paid subscriptions are the most common cause of a
 #     failed delete. Phase 0 aborts if any are visible; cancel via billing first.
+#   * Cleanup phases (1-3) must return 200/404 or the run aborts BEFORE the
+#     irreversible account delete.
 #   * Order of operations (docs): gateway config -> access organization -> account.
 
 param([switch]$Execute)
@@ -30,7 +32,8 @@ if ([string]::IsNullOrWhiteSpace($TargetName)) {
 }
 
 Write-Host "== Locate account by EXACT name: '$TargetName' =="
-$r = Invoke-CfApi GET "/accounts?per_page=50"
+$r = Invoke-CfApiAll GET "/accounts"
+if ($r.Status -ne 200) { Write-Host "ERROR: accounts listing returned HTTP $($r.Status)" -ForegroundColor Red; exit 1 }
 $acct = $r.Json.result | Where-Object { $_.name -ceq $TargetName } | Select-Object -First 1
 if (-not $acct) {
     Write-Host "ERROR: no account with that exact name. Aborting." -ForegroundColor Red
@@ -39,17 +42,23 @@ if (-not $acct) {
 $AccountId = $acct.id
 Write-Host "ACCOUNT_ID: $AccountId"
 
+function Get-FreshLogpushIds {
+    # Fresh paginated logpush inventory (dry-run display and -Execute re-fetch).
+    $l = Invoke-CfApiAll GET "/accounts/$AccountId/logpush/jobs"
+    if ($l.Status -ne 200) { return @() }
+    @($l.Json.result | ForEach-Object { $_.id })
+}
+
 Write-Host ""
 Write-Host "== Pre-deletion inventory =="
-$z = Invoke-CfApi GET "/zones?account.id=$AccountId&per_page=50"
+$z = Invoke-CfApiAll GET "/zones?account.id=$AccountId"
+if ($z.Status -ne 200) { Write-Host "ERROR: zones listing returned HTTP $($z.Status)" -ForegroundColor Red; exit 1 }
 $zones = ($z.Json.result | ForEach-Object { $_.name }) -join ","
-$l = Invoke-CfApi GET "/accounts/$AccountId/logpush/jobs"
-$logpushIds = @()
-if ($l.Status -eq 200) { $logpushIds = @($l.Json.result | ForEach-Object { $_.id }) }
+$logpushIds = Get-FreshLogpushIds
+$m = Invoke-CfApiAll GET "/accounts/$AccountId/members"
+$memberCount = if ($m.Status -eq 200) { $m.Json.result.Count } else { "?" }
 Write-Host "  zones that will be destroyed : $(if ($zones) { $zones } else { 'none' })"
 Write-Host "  logpush jobs to remove       : $(if ($logpushIds.Count) { $logpushIds -join ',' } else { '(none found)' })"
-$m = Invoke-CfApi GET "/accounts/$AccountId/members?per_page=50"
-$memberCount = if ($m.Status -eq 200) { $m.Json.result.Count } else { "?" }
 Write-Host "  member count                 : $memberCount"
 
 if (-not $Execute) {
@@ -84,22 +93,35 @@ if ($s.Status -eq 200) {
 }
 
 Write-Host ""
-Write-Host "== Phase 1: remove logpush jobs =="
+Write-Host "== Phase 1: remove logpush jobs (fresh inventory) =="
+$logpushIds = Get-FreshLogpushIds
 foreach ($jobId in $logpushIds) {
     Write-Host "  deleting logpush job $jobId"
     $d = Invoke-CfApi DELETE "/accounts/$AccountId/logpush/jobs/$jobId"
-    Write-Host ("    success={0}  errors={1}" -f $d.Json.success, (Get-ErrorSummary $d.Json))
+    Write-Host ("    HTTP {0}  success={1}  errors={2}" -f $d.Status, $d.Json.success, (Get-ErrorSummary $d.Json))
+    if ($d.Status -ne 200 -and $d.Status -ne 404) {
+        Write-Host "ERROR: logpush job $jobId DELETE returned HTTP $($d.Status) - aborting before account deletion." -ForegroundColor Red
+        exit 1
+    }
 }
 
 Write-Host ""
 Write-Host "== Phase 2: remove Zero Trust gateway configuration =="
 $g = Invoke-CfApi DELETE "/accounts/$AccountId/gateway"
-Write-Host ("  success={0}  errors={1}" -f $g.Json.success, (Get-ErrorSummary $g.Json))
+Write-Host ("  gateway DELETE: HTTP {0}  success={1}  errors={2}" -f $g.Status, $g.Json.success, (Get-ErrorSummary $g.Json))
+if ($g.Status -ne 200 -and $g.Status -ne 404) {
+    Write-Host "ERROR: gateway DELETE returned HTTP $($g.Status) - aborting before account deletion." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "== Phase 3: remove Access organization =="
 $a = Invoke-CfApi DELETE "/accounts/$AccountId/access/organizations"
-Write-Host ("  success={0}  errors={1}" -f $a.Json.success, (Get-ErrorSummary $a.Json))
+Write-Host ("  Access organization DELETE: HTTP {0}  success={1}  errors={2}" -f $a.Status, $a.Json.success, (Get-ErrorSummary $a.Json))
+if ($a.Status -ne 200 -and $a.Status -ne 404) {
+    Write-Host "ERROR: Access organization DELETE returned HTTP $($a.Status) - aborting before account deletion." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "== Phase 4: delete the account =="

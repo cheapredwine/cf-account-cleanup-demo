@@ -117,9 +117,11 @@ powershell/delete-account.ps1 -Execute             # real run, typed account ID 
 
 ## Safety features
 
-- **Exact-name matching** (`==`, not partial) — no fuzzy matching against lookalike production account names
-- **Dry-run default** on the deletion script; `--execute` is the explicit opt-in
-- **Typed confirmation gates** — `LEAVE` for the reversible operation, the full account ID for the irreversible one
+- **Exact-name matching** (`==` / `-ceq`, not partial) — no fuzzy matching against lookalike production account names
+- **Dry-run default** on the deletion script; `--execute` / `-Execute` is the explicit opt-in
+- **Typed confirmation gates, interactive-only** — `LEAVE` for the reversible operation, the full account ID for the irreversible one; piped/redirected stdin is rejected (bash reads `/dev/tty`, PowerShell checks `[Console]::IsInputRedirected`)
+- **No pagination truncation** — all list endpoints fetch every page; a failed page aborts instead of silently capping at 50 items
+- **Cleanup-phase assertions** — every pre-delete cleanup phase must return 200/404 or the run aborts before the account delete
 - **Verification steps** after every mutation
 - **Read-only preflight** shares exactly what will be destroyed, before anything runs
 

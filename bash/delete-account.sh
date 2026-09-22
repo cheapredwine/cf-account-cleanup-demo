@@ -17,6 +17,8 @@
 #   * Subscriptions: the Tenant docs do not list them as a manual pre-delete,
 #     but in practice leftover paid subscriptions are the most common cause of a
 #     failed delete. Phase 0 aborts if any are visible; cancel via billing first.
+#   * Cleanup phases (1-3) must return 200/404 or the run aborts BEFORE the
+#     irreversible account delete.
 #   * Order of operations (docs): gateway config -> access organization -> account.
 
 set -euo pipefail
@@ -27,18 +29,42 @@ EXECUTE=false
 
 TARGET_NAME="${TARGET_ACCOUNT_NAME:?Set TARGET_ACCOUNT_NAME in config.sh}"
 
+# Phase-assert helper: every pre-delete mutation must return 200/404.
+assert_cleanup_status() {
+  local label="$1" resp="$2" status="$3"
+  if [[ "$status" != "200" && "$status" != "404" ]]; then
+    echo "ERROR: $label returned HTTP $status — aborting before account deletion." >&2
+    printf '%s' "$resp" | sed 's/^HTTP_STATUS:.*$//' | jq '{success, errors}' 2>/dev/null || true
+    exit 1
+  fi
+}
+
+# Fresh paginated logpush inventory (used by dry-run display and --execute).
+harvest_logpush_ids() {
+  local resp=""
+  cf_all_to resp GET "/accounts/$ACCOUNT_ID/logpush/jobs" 2>/dev/null || true
+  printf '%s' "$resp" | jq -r '.result[]?.id' 2>/dev/null || true
+}
+
 echo "== Locate account by EXACT name: '$TARGET_NAME' =="
-ACCOUNT_ID=$(cf_json GET "/accounts?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.name == $n) | .id' | head -n1)
+cf_all_to ACCOUNTS GET "/accounts"
+ACCOUNT_ID=$(printf '%s' "$ACCOUNTS" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.name == $n) | .id' | head -n1)
 [[ -n "$ACCOUNT_ID" ]] || { echo "ERROR: no account with that exact name. Aborting."; exit 1; }
 echo "ACCOUNT_ID: $ACCOUNT_ID"
 
 echo
 echo "== Pre-deletion inventory =="
-ZONES=$(cf_json GET "/zones?account.id=$ACCOUNT_ID&per_page=50" | jq -r '.result[]?.name' | paste -sd, -)
-LOGPUSH_IDS=$(cf_json GET "/accounts/$ACCOUNT_ID/logpush/jobs" | jq -r '.result[]?.id' 2>/dev/null || true)
+cf_all_to ZONES_RESP GET "/zones?account.id=$ACCOUNT_ID"
+ZONES=$(printf '%s' "$ZONES_RESP" | jq -r '[.result[]?.name] | join(",")')
+LOGPUSH_IDS=$(harvest_logpush_ids)
+cf_all_to MEMBERS GET "/accounts/$ACCOUNT_ID/members" 2>/dev/null || true
+MEMBER_COUNT='?'
+if [[ "$CF_ALL_STATUS" == "200" ]]; then
+  MEMBER_COUNT=$(printf '%s' "$MEMBERS" | jq '(.result // []) | length')
+fi
 echo "  zones that will be destroyed : ${ZONES:-none}"
 echo "  logpush jobs to remove       : ${LOGPUSH_IDS:-(none found)}"
-echo "  member count                 : $(cf_json GET "/accounts/$ACCOUNT_ID/members?per_page=50" | jq '.result | length' 2>/dev/null || echo '?')"
+echo "  member count                 : $MEMBER_COUNT"
 
 if ! $EXECUTE; then
   echo
@@ -58,12 +84,13 @@ echo "== Phase 0: subscription check (abort if active subscriptions exist) =="
 # The Tenant docs require Logpush/gateway/Access cleanup before deletion; paid
 # subscriptions are not listed there, but in practice a leftover subscription is
 # the most common cause of a failed delete. Cancel those via billing first.
-SUB_STATUS=$(cf GET "/accounts/$ACCOUNT_ID/subscriptions" | tail -n1 | cut -d: -f2)
+SUB_RESP=$(cf GET "/accounts/$ACCOUNT_ID/subscriptions")
+SUB_STATUS=$(printf '%s' "$SUB_RESP" | tail -n1 | cut -d: -f2)
 if [[ "$SUB_STATUS" == "200" ]]; then
-  SUB_COUNT=$(cf_json GET "/accounts/$ACCOUNT_ID/subscriptions" | jq '(.result // [] | length)')
+  SUB_COUNT=$(printf '%s' "$SUB_RESP" | sed 's/^HTTP_STATUS:.*$//' | jq '(.result // [] | length)')
   if [[ "$SUB_COUNT" -gt 0 ]]; then
     echo "ERROR: $SUB_COUNT active subscription(s) found. Cancel them via billing first, then re-run."
-    cf_json GET "/accounts/$ACCOUNT_ID/subscriptions" | jq -r '.result[]? | "  sub \(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")"'
+    printf '%s' "$SUB_RESP" | sed 's/^HTTP_STATUS:.*$//' | jq -r '.result[]? | "  sub \(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")"'
     exit 1
   fi
   echo "  no active subscriptions"
@@ -72,20 +99,30 @@ else
 fi
 
 echo
-echo "== Phase 1: remove logpush jobs =="
+echo "== Phase 1: remove logpush jobs (fresh inventory) =="
+LOGPUSH_IDS=$(harvest_logpush_ids)
 while IFS= read -r job_id; do
   [[ -z "$job_id" ]] && continue
   echo "  deleting logpush job $job_id"
-  cf_json DELETE "/accounts/$ACCOUNT_ID/logpush/jobs/$job_id" | jq '{success, errors}'
+  RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/logpush/jobs/$job_id")
+  STATUS=$(printf '%s' "$RESP" | tail -n1 | cut -d: -f2)
+  assert_cleanup_status "logpush job $job_id DELETE" "$RESP" "$STATUS"
+  echo "    HTTP $STATUS"
 done <<< "$LOGPUSH_IDS"
 
 echo
 echo "== Phase 2: remove Zero Trust gateway configuration =="
-cf_json DELETE "/accounts/$ACCOUNT_ID/gateway" | jq '{success, errors}' || true
+RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/gateway")
+STATUS=$(printf '%s' "$RESP" | tail -n1 | cut -d: -f2)
+assert_cleanup_status "gateway DELETE" "$RESP" "$STATUS"
+echo "  gateway DELETE: HTTP $STATUS"
 
 echo
 echo "== Phase 3: remove Access organization =="
-cf_json DELETE "/accounts/$ACCOUNT_ID/access/organizations" | jq '{success, errors}' || true
+RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/access/organizations")
+STATUS=$(printf '%s' "$RESP" | tail -n1 | cut -d: -f2)
+assert_cleanup_status "Access organization DELETE" "$RESP" "$STATUS"
+echo "  Access organization DELETE: HTTP $STATUS"
 
 echo
 echo "== Phase 4: delete the account =="

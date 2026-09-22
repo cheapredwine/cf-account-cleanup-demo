@@ -15,11 +15,12 @@ source "$(dirname "$0")/common.sh"
 TARGET_NAME="${TARGET_ACCOUNT_NAME:?Set TARGET_ACCOUNT_NAME in config.sh}"
 
 echo "== Find membership for account '$TARGET_NAME' =="
-MEMBERSHIP_ID=$(cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | .id' | head -n1)
+cf_all_to MEMBERSHIPS GET "/memberships"
+MEMBERSHIP_ID=$(printf '%s' "$MEMBERSHIPS" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | .id' | head -n1)
 [[ -n "$MEMBERSHIP_ID" ]] || { echo "No membership found for that name. Nothing to do."; exit 1; }
 
 echo "membership_id: $MEMBERSHIP_ID"
-cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "account=\(.account.name)  id=\(.account.id)  status=\(.status)  roles=\(.roles | map(if type == "object" then .name else . end) | join(","))"'
+printf '%s' "$MEMBERSHIPS" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "account=\(.account.name)  id=\(.account.id)  status=\(.status)  roles=\(.roles | map(if type == "object" then .name else . end) | join(","))"'
 
 echo
 echo "Removing this membership hides the account from this user's dashboard."
@@ -30,4 +31,5 @@ cf_json DELETE "/memberships/$MEMBERSHIP_ID" | jq '{success, errors}'
 
 echo
 echo "== Verification: membership should be gone =="
-cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" 'if (.result | map(select(.account.name == $n)) | length) == 0 then "membership removed — account no longer listed for this user" else "still present" end'
+cf_all_to VERIFY GET "/memberships"
+printf '%s' "$VERIFY" | jq -r --arg n "$TARGET_NAME" 'if ((.result // []) | map(select(.account.name == $n)) | length) == 0 then "membership removed — account no longer listed for this user" else "still present" end'
