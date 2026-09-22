@@ -2,7 +2,7 @@
 
 Demo scripts for safely removing a Cloudflare account via the API — with a read-only preflight, a dry-run-by-default deletion flow, and typed confirmations before anything destructive runs.
 
-> **Read this first.** There are two very different operations, and choosing the wrong one is either wasted work or permanent data loss. Start with `precheck.sh` and review its output before running anything else.
+> **Read this first.** There are two very different operations, and choosing the wrong one is either wasted work or permanent data loss. Start with `bash/precheck.sh` and review its output before running anything else.
 
 ---
 
@@ -37,6 +37,7 @@ brew install jq          # macOS
 # apt install jq         # Debian/Ubuntu
 
 # 2. Create your config
+cd bash
 cp config.example.sh config.sh
 
 # 3. Fill in credentials in config.sh:
@@ -55,7 +56,7 @@ cp config.example.sh config.sh
 
 The tenant-level deletion flow per the docs uses the **Global API Key**; an API token works if it belongs to the tenant admin user.
 
-**Windows / PowerShell 7+** (`pwsh`): copy `config.example.ps1` to `config.ps1` and fill in the same values. The `.ps1` scripts mirror the `.sh` scripts exactly — same endpoints, same confirmation gates, same dry-run plan. No jq needed.
+**Windows / PowerShell 7+** (`pwsh`): in `powershell/`, copy `config.example.ps1` to `config.ps1` and fill in the same values. The `.ps1` scripts mirror the `.sh` scripts exactly — same endpoints, same confirmation gates, same dry-run plan. No jq needed.
 
 ---
 
@@ -64,8 +65,8 @@ The tenant-level deletion flow per the docs uses the **Global API Key**; an API 
 ### 1. Preflight (read-only, zero mutations)
 
 ```bash
-./precheck.sh                # uses TARGET_ACCOUNT_NAME from config.sh
-./precheck.sh "Other name"   # or pass the exact account name as arg 1
+bash/precheck.sh                # uses TARGET_ACCOUNT_NAME from bash/config.sh
+bash/precheck.sh "Other name"   # or pass the exact account name as arg 1
 ```
 
 Sections:
@@ -82,16 +83,16 @@ Sections:
 ### 2. Option A — hide the account from your dashboard
 
 ```bash
-./leave-account.sh
+bash/leave-account.sh
 # Requires typing LEAVE to confirm. The account is NOT deleted.
 ```
 
 ### 3. Option B — delete the account permanently
 
 ```bash
-./delete-account.sh            # DRY RUN (default): shows the plan, changes nothing
-./delete-account.sh --execute  # real run: cleanup phases + deletion,
-                               # still requires typing the full 32-char account ID
+bash/delete-account.sh            # DRY RUN (default): shows the plan, changes nothing
+bash/delete-account.sh --execute  # real run: cleanup phases + deletion,
+                                  # still requires typing the full 32-char account ID
 ```
 
 What `--execute` does, in order:
@@ -105,11 +106,11 @@ What `--execute` does, in order:
 ### PowerShell equivalent (Windows / `pwsh` 7+)
 
 ```powershell
-./precheck.ps1                            # read-only preflight (same 9 sections)
-./precheck.ps1 -TargetAccountName "Other" # exact account name as parameter
-./leave-account.ps1                       # Option A (typed LEAVE gate)
-./delete-account.ps1                      # Option B dry run (default)
-./delete-account.ps1 -Execute             # real run, typed account ID gate
+powershell/precheck.ps1                            # read-only preflight (same 9 sections)
+powershell/precheck.ps1 -TargetAccountName "Other" # exact account name as parameter
+powershell/leave-account.ps1                       # Option A (typed LEAVE gate)
+powershell/delete-account.ps1                      # Option B dry run (default)
+powershell/delete-account.ps1 -Execute             # real run, typed account ID gate
 ```
 
 ---
@@ -124,7 +125,7 @@ What `--execute` does, in order:
 
 ## Recommended customer workflow
 
-1. Run `./precheck.sh` and review the zone list with stakeholders
+1. Run `bash/precheck.sh` and review the zone list with stakeholders
 2. Confirm which option matches the actual goal (A: hide, B: destroy)
 3. For B: verify Logpush/gateway/Access cleanup completes, then delete
 4. If the credential is not a tenant admin over the account: engage the Cloudflare account team for deletion

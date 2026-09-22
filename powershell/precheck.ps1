@@ -121,7 +121,8 @@ Write-Host "== 9. Your membership entry for this account =="
 $mem = Invoke-CfApi GET "/memberships?per_page=50"
 $mem.Json.result | Where-Object { $_.account.name -ceq $TargetAccountName } |
     ForEach-Object {
-        $roles = ($_.roles | ForEach-Object { $_.name }) -join ","
+        # Roles shape varies by auth: strings (OAuth) or objects (API key).
+        $roles = ($_.roles | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.name } }) -join ","
         Write-Host ("membership_id={0}  status={1}  roles={2}" -f $_.id, $_.status, $roles)
     }
 

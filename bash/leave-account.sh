@@ -19,7 +19,7 @@ MEMBERSHIP_ID=$(cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_
 [[ -n "$MEMBERSHIP_ID" ]] || { echo "No membership found for that name. Nothing to do."; exit 1; }
 
 echo "membership_id: $MEMBERSHIP_ID"
-cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "account=\(.account.name)  id=\(.account.id)  status=\(.status)  roles=\(.roles | map(.name) | join(","))"'
+cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "account=\(.account.name)  id=\(.account.id)  status=\(.status)  roles=\(.roles | map(if type == "object" then .name else . end) | join(","))"'
 
 echo
 echo "Removing this membership hides the account from this user's dashboard."

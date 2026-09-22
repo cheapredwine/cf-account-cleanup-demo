@@ -67,7 +67,7 @@ cf_json GET "/accounts/$ACCOUNT_ID/members?per_page=50" | jq -r '.result[]? | "\
 
 echo
 echo "== 9. Your membership entry for this account =="
-cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "membership_id=\(.id)  status=\(.status)  roles=\(.roles | map(.name) | join(","))"'
+cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "membership_id=\(.id)  status=\(.status)  roles=\(.roles | map(if type == "object" then .name else . end) | join(","))"'
 
 echo
 echo "Precheck complete. No changes were made."

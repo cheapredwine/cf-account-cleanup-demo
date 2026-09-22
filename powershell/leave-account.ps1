@@ -25,7 +25,7 @@ if (-not $entry) {
     exit 1
 }
 
-$roles = ($entry.roles | ForEach-Object { $_.name }) -join ","
+$roles = ($entry.roles | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.name } }) -join ","
 Write-Host ("account={0}  id={1}  status={2}  roles={3}" -f $entry.account.name, $entry.account.id, $entry.status, $roles)
 Write-Host "membership_id: $($entry.id)"
 

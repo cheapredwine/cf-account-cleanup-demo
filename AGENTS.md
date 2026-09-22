@@ -7,17 +7,18 @@ Guidance for AI coding agents working in this repository.
 Public demo code: safe, auditable scripts for removing a Cloudflare account via
 the API, in two languages that must stay in behavioral parity.
 
-- Bash: `precheck.sh`, `leave-account.sh`, `delete-account.sh` (+ `common.sh`, `config.example.sh`)
-- PowerShell 7+: `precheck.ps1`, `leave-account.ps1`, `delete-account.ps1` (+ `common.ps1`, `config.example.ps1`)
+- Bash (in `bash/`): `precheck.sh`, `leave-account.sh`, `delete-account.sh` (+ `common.sh`, `config.example.sh`; local-only `config.sh`)
+- PowerShell 7+ (in `powershell/`): `precheck.ps1`, `leave-account.ps1`, `delete-account.ps1` (+ `common.ps1`, `config.example.ps1`; local-only `config.ps1`)
 
-Customer-facing doc: `README.md`. Dev tool: `.syntax-check.ps1` (PowerShell parse check).
+Customer-facing doc: `README.md`. Dev tool: `powershell/.syntax-check.ps1` (PowerShell parse check; PSScriptRoot-relative, cwd-independent).
 
 ## Critical rules
 
-1. **Never execute destructive API calls.** `delete-account.sh --execute` /
-   `delete-account.ps1 -Execute` permanently delete an account. Only a human runs them, only
-   after reviewing precheck output, and only against a throwaway account. Agents test with dry
-   runs (the default) and fake credentials only.
+1. **Never execute destructive API calls.** `bash/delete-account.sh --execute` /
+   `powershell/delete-account.ps1 -Execute` permanently delete an account. Only a human runs them, only
+   after reviewing precheck output, and only against a throwaway account. Dry runs (the default) and
+   precheck are GET-only by construction — safe to run with real credentials against throwaway
+   accounts at the operator's explicit request. Smoke-test failure paths with fake credentials.
 2. **Typed confirmations are load-bearing.** The `LEAVE` gate and the full 32-character account-ID
    gate must never be weakened, automated, or bypassed (no default answers, no piped input).
 3. **Exact-name matching only.** Account lookups use `==` (bash) / `-ceq` (PowerShell) against the
@@ -27,8 +28,9 @@ Customer-facing doc: `README.md`. Dev tool: `.syntax-check.ps1` (PowerShell pars
    `-Execute` opt-in, Phase 0 subscription gate (abort if active subs visible), verification step
    after every mutation, read-only precheck that inspects all pre-deletion resources.
 5. **No secrets, no real customer or account names in committed files.** This repo is public. A
-   real customer name was scrubbed before publishing — do not reintroduce one. `config.sh` and
-   `config.ps1` are gitignored; keep credentials in them, never in scripts or chat history.
+   real customer name was scrubbed before publishing — do not reintroduce one. `bash/config.sh`
+   and `powershell/config.ps1` are gitignored; keep credentials in them, never in scripts or
+   chat history.
 
 ## Doc-accuracy rule
 
@@ -51,7 +53,8 @@ practice, not listed in the docs' required list". Do not upgrade lore to documen
 - Do not set `param()` defaults that read `$env:` values assigned by `config.ps1` — param
   defaults evaluate before the config dot-source runs. Apply the env fallback in the body after
   loading `common.ps1` (see `precheck.ps1`).
-- Endpoints, headers, and credential handling live in `common.sh` / `common.ps1` only.
+- Endpoints, headers, and credential handling live in `bash/common.sh` / `powershell/common.ps1`
+  only. Each loads its config from its own directory, independent of cwd.
 - Bash and PowerShell must mirror each other: precheck section numbering (1-9), dry-run plan
   text (0-4), phase order, confirmation prompts, verification steps. Changing one port requires
   the same change in the other.
@@ -60,9 +63,10 @@ practice, not listed in the docs' required list". Do not upgrade lore to documen
 ## Testing
 
 - Bash syntax: `bash -n <file>` for every `.sh` touched.
-- PowerShell syntax: `pwsh -NoProfile -File .syntax-check.ps1`.
-- Smoke tests: fake credentials + GET-only endpoints (e.g., run `precheck.ps1` with a fake token —
-  it must fail cleanly with a readable message and exit 1). Never smoke-test DELETE endpoints.
+- PowerShell syntax: `pwsh -NoProfile -File powershell/.syntax-check.ps1`.
+- Smoke tests: fake credentials + GET-only endpoints (e.g., run `powershell/precheck.ps1` with a
+  fake token — it must fail cleanly with a readable message and exit 1). Never smoke-test DELETE
+  endpoints.
 - Verify parity after cross-language changes: same dry-run plan text, same section list.
 
 ## Publishing hygiene (run before every push)
@@ -72,5 +76,5 @@ practice, not listed in the docs' required list". Do not upgrade lore to documen
   (including this file).
 - Secrets scan: `git grep -inE "CF_API_TOKEN=\"[^\"]|CF_AUTH_KEY=\"[^\"]" $(git rev-list --all)` → must
   be clean.
-- Confirm gitignored: `config.sh`, `config.ps1`.
+- Confirm gitignored: `bash/config.sh`, `powershell/config.ps1`.
 - Review `git log --oneline` — no customer names in commit messages.
