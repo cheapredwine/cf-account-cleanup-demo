@@ -25,7 +25,7 @@ Most "we want this account gone" requests are actually Option A. Confirm intent 
    - Logpush jobs — if left behind, log delivery can continue after deletion
    - Zero Trust gateway configuration
    - Access organization
-4. **Order of operations** (per docs): gateway configuration → Access organization → account.
+4. **Order of operations** (per docs): gateway configuration → Access organization → account. Subscriptions are not listed as a required manual pre-delete in the docs, but leftover paid subscriptions are the most common cause of a failed delete in practice — the `--execute` flow aborts if any are visible; cancel those via billing first.
 
 ---
 
@@ -51,7 +51,7 @@ cp config.example.sh config.sh
 |---|---|
 | `precheck.sh` (read-only) | Account Settings:Read, Zone:Read, Logpush:Read, Zero Trust:Read |
 | `leave-account.sh` | Membership:Read, Membership:Edit |
-| `delete-account.sh --execute` | Logpush:Edit, Zero Trust:Edit, plus tenant-admin authority over the account |
+| `delete-account.sh --execute` | Account Settings:Write, Logpush:Edit, Zero Trust:Edit, plus tenant-admin authority over the account |
 
 The tenant-level deletion flow per the docs uses the **Global API Key**; an API token works if it belongs to the tenant admin user.
 
@@ -70,11 +70,12 @@ Sections:
 1. Locate the account by **exact name** match → prints the account ID
 2. Account details (id, name, created date)
 3. Zones under the account — **these are destroyed with it**
-4. Logpush jobs — must be deleted manually before account deletion
-5. Zero Trust gateway configuration — delete manually before deletion
-6. Access organization — delete manually before deletion
-7. Members with access — confirm nobody else relies on this account
-8. Your membership entry for this account
+4. Subscriptions/entitlements — cancel before deletion; active subs are the most common cause of a failed delete
+5. Logpush jobs — must be deleted manually before account deletion
+6. Zero Trust gateway configuration — delete manually before deletion
+7. Access organization — delete manually before deletion
+8. Members with access — confirm nobody else relies on this account
+9. Your membership entry for this account
 
 ### 2. Option A — hide the account from your dashboard
 
@@ -92,11 +93,12 @@ Sections:
 ```
 
 What `--execute` does, in order:
-1. Deletes all Logpush jobs found on the account
-2. Deletes the Zero Trust gateway configuration
-3. Deletes the Access organization
-4. Deletes the account — after a typed confirmation of the full account ID
-5. Verifies deletion (expects HTTP 403/404 on a follow-up GET)
+1. Subscription gate — aborts if any active subscriptions are visible (cancel via billing first)
+2. Deletes all Logpush jobs found on the account
+3. Deletes the Zero Trust gateway configuration
+4. Deletes the Access organization
+5. Deletes the account — after a typed confirmation of the full account ID
+6. Verifies deletion (expects HTTP 403/404 on a follow-up GET)
 
 ---
 

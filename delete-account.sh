@@ -14,6 +14,9 @@
 #   * Deletion is PERMANENT and destroys zones and most resources under the account.
 #   * NOT auto-deleted: Logpush jobs, Zero Trust gateway configuration, Access
 #     organization. This script removes those first in --execute mode.
+#   * Subscriptions: the Tenant docs do not list them as a manual pre-delete,
+#     but in practice leftover paid subscriptions are the most common cause of a
+#     failed delete. Phase 0 aborts if any are visible; cancel via billing first.
 #   * Order of operations (docs): gateway config -> access organization -> account.
 
 set -euo pipefail
@@ -41,11 +44,31 @@ if ! $EXECUTE; then
   echo
   echo "DRY RUN — nothing was changed."
   echo "Plan if run with --execute:"
+  echo "  0. subscriptions: abort if any active subscriptions exist (cancel them"
+  echo "     via billing first — leftover subs are the most common cause of a failed delete)"
   echo "  1. DELETE logpush jobs: ${LOGPUSH_IDS:-(none)}"
   echo "  2. DELETE /accounts/$ACCOUNT_ID/gateway            (Zero Trust gateway config)"
   echo "  3. DELETE /accounts/$ACCOUNT_ID/access/organizations"
   echo "  4. DELETE /accounts/$ACCOUNT_ID                    (permanent)"
   exit 0
+fi
+
+echo
+echo "== Phase 0: subscription check (abort if active subscriptions exist) =="
+# The Tenant docs require Logpush/gateway/Access cleanup before deletion; paid
+# subscriptions are not listed there, but in practice a leftover subscription is
+# the most common cause of a failed delete. Cancel those via billing first.
+SUB_STATUS=$(cf GET "/accounts/$ACCOUNT_ID/subscriptions" | tail -n1 | cut -d: -f2)
+if [[ "$SUB_STATUS" == "200" ]]; then
+  SUB_COUNT=$(cf_json GET "/accounts/$ACCOUNT_ID/subscriptions" | jq '(.result // [] | length)')
+  if [[ "$SUB_COUNT" -gt 0 ]]; then
+    echo "ERROR: $SUB_COUNT active subscription(s) found. Cancel them via billing first, then re-run."
+    cf_json GET "/accounts/$ACCOUNT_ID/subscriptions" | jq -r '.result[]? | "  sub \(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")"'
+    exit 1
+  fi
+  echo "  no active subscriptions"
+else
+  echo "  subscription list not visible to this credential (HTTP $SUB_STATUS) — verify billing manually before proceeding"
 fi
 
 echo

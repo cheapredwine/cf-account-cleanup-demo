@@ -5,11 +5,13 @@
 # What it inspects, per https://developers.cloudflare.com/tenant/how-to/manage-accounts/
 #   1. The account itself (id, name, created date)
 #   2. Zones under the account (destroyed by account deletion)
-#   3. Logpush jobs          — NOT auto-deleted; must be removed manually first
-#   4. Zero Trust gateway configuration — NOT auto-deleted; remove manually
-#   5. Access organization   — NOT auto-deleted; remove manually
-#   6. Members with access   — confirm nobody else relies on this account
-#   7. Your membership view  — how this account is attached to your user
+#   3. Subscriptions/entitlements — cancel before deletion; active subs are
+#      the most common cause of a failed delete (billing-linked)
+#   4. Logpush jobs          — NOT auto-deleted; must be removed manually first
+#   5. Zero Trust gateway configuration — NOT auto-deleted; remove manually
+#   6. Access organization   — NOT auto-deleted; remove manually
+#   7. Members with access   — confirm nobody else relies on this account
+#   8. Your membership view  — how this account is attached to your user
 
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
@@ -37,25 +39,34 @@ echo "== 3. Zones under this account (these get destroyed with the account) =="
 cf_json GET "/zones?account.id=$ACCOUNT_ID&per_page=50" | jq -r 'if (.result | length) == 0 then "none" else .result[] | "\(.id)  \(.name)  status=\(.status)" end'
 
 echo
-echo "== 4. Logpush jobs (delete manually BEFORE account deletion) =="
+echo "== 4. Subscriptions/entitlements (cancel BEFORE deletion; active subs are the most common cause of a failed delete) =="
+SUB_STATUS=$(cf GET "/accounts/$ACCOUNT_ID/subscriptions" | tail -n1 | cut -d: -f2)
+if [[ "$SUB_STATUS" == "200" ]]; then
+  cf_json GET "/accounts/$ACCOUNT_ID/subscriptions" | jq -r 'if ((.result // []) | length) == 0 then "none" else .result[]? | "\(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")" end' 2>/dev/null
+else
+  echo "subscriptions list not visible to this credential (HTTP $SUB_STATUS) — verify billing manually before deleting"
+fi
+
+echo
+echo "== 5. Logpush jobs (delete manually BEFORE account deletion) =="
 cf_json GET "/accounts/$ACCOUNT_ID/logpush/jobs" | jq -r 'if (.result | length) == 0 then "none" else .result[] | "\(.id)  destination=\(.destination_conf)" end' 2>/dev/null || echo "endpoint not available for this credential"
 
 echo
-echo "== 5. Zero Trust gateway configuration (delete manually BEFORE account deletion) =="
+echo "== 6. Zero Trust gateway configuration (delete manually BEFORE account deletion) =="
 STATUS=$(cf GET "/accounts/$ACCOUNT_ID/gateway" | tail -n1 | cut -d: -f2)
 if [[ "$STATUS" == "200" ]]; then cf_json GET "/accounts/$ACCOUNT_ID/gateway" | jq '.result | {id, name}'; else echo "no gateway configuration (HTTP $STATUS)"; fi
 
 echo
-echo "== 6. Access organization (delete manually BEFORE account deletion) =="
+echo "== 7. Access organization (delete manually BEFORE account deletion) =="
 STATUS=$(cf GET "/accounts/$ACCOUNT_ID/access/organizations" | tail -n1 | cut -d: -f2)
 if [[ "$STATUS" == "200" ]]; then cf_json GET "/accounts/$ACCOUNT_ID/access/organizations" | jq '.result | {id, name}'; else echo "no access organization (HTTP $STATUS)"; fi
 
 echo
-echo "== 7. Members with access to this account =="
+echo "== 8. Members with access to this account =="
 cf_json GET "/accounts/$ACCOUNT_ID/members?per_page=50" | jq -r '.result[]? | "\(.user.email)  role=\(.roles[0].name // "?")  status=\(.status)"' 2>/dev/null || echo "members list not available for this credential"
 
 echo
-echo "== 8. Your membership entry for this account =="
+echo "== 9. Your membership entry for this account =="
 cf_json GET "/memberships?per_page=50" | jq -r --arg n "$TARGET_NAME" '.result[] | select(.account.name == $n) | "membership_id=\(.id)  status=\(.status)  roles=\(.roles | map(.name) | join(","))"'
 
 echo
