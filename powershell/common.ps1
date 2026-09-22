@@ -27,6 +27,8 @@ function Assert-CfConfig {
 # Returns @{ Status = <int http code>; Json = <parsed body> }.
 # Never throws on HTTP errors (SkipHttpErrorCheck) — callers branch on Status,
 # mirroring the bash version's body+HTTP_STATUS output.
+# Credentials travel in the request headers of this process; unlike the bash
+# port there is no child process, so they never reach an argument list.
 function Invoke-CfApi {
     param(
         [Parameter(Mandatory = $true)][string]$Method,
@@ -75,7 +77,10 @@ function Invoke-CfApiAll {
             Write-Host "ERROR: $Path page $page returned HTTP $($r.Status)" -ForegroundColor Red
             return @{ Status = $r.Status; Json = $null }
         }
-        $all += @($r.Json.result)
+        # Drop nulls: an endpoint answering "result": null would otherwise make
+        # @($r.Json.result) a one-element array of $null, so an empty list would
+        # report Count 1 and the caller would iterate over a phantom entry.
+        $all += @($r.Json.result | Where-Object { $null -ne $_ })
         $info = $r.Json.result_info
         $totalPages = if ($info -and $info.total_pages) { [int]$info.total_pages } else { 1 }
         if ($page -ge $totalPages) { break }
@@ -88,6 +93,15 @@ function Invoke-CfApiAll {
 function Get-ErrorSummary {
     param([AllowNull()][object]$Json)
     if ($Json -and $Json.errors) { ($Json.errors | ForEach-Object { $_.message }) -join "; " } else { "" }
+}
+
+# Get-CfSummary -Response <Invoke-CfApi result> — "HTTP x  success=y  errors=z".
+function Get-CfSummary {
+    param([Parameter(Mandatory = $true)][hashtable]$Response)
+    $success = if ($Response.Json -and $null -ne $Response.Json.success) { $Response.Json.success } else { "n/a" }
+    $errs = Get-ErrorSummary $Response.Json
+    if (-not $errs) { $errs = "none" }
+    "HTTP {0}  success={1}  errors={2}" -f $Response.Status, $success, $errs
 }
 
 # Confirm-OrAbort -Prompt "..." -Expected "TEXT"

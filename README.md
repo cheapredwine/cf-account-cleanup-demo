@@ -1,6 +1,6 @@
 # Cloudflare Account Removal Scripts
 
-Demo scripts for safely removing a Cloudflare account via the API — with a read-only preflight, a dry-run-by-default deletion flow, and typed confirmations before anything destructive runs.
+Demo scripts for safely removing a Cloudflare account via the API — with a read-only preflight, a dry-run-by-default deletion flow, and a typed confirmation before anything destructive runs.
 
 > **Read this first.** There are two very different operations, and choosing the wrong one is either wasted work or permanent data loss. Start with `bash/precheck.sh` and review its output before running anything else.
 
@@ -21,10 +21,11 @@ Most "we want this account gone" requests are actually Option A. Confirm intent 
 
 1. **Tenant admins only.** Per the [Tenant API docs](https://developers.cloudflare.com/tenant/how-to/manage-accounts/), `DELETE /accounts/{account_id}` is *"only available for tenant admins at this time."* It works for accounts owned or created by the tenant behind the credential. A normal customer account typically **cannot self-delete via API** — that is handled by the Cloudflare account team/support.
 2. **Deletion is permanent.** Zones under the account are destroyed and cannot be recovered.
-3. **These are NOT auto-deleted** and must be removed first (the scripts do this in `--execute` mode):
-   - Logpush jobs — if left behind, log delivery can continue after deletion
-   - Zero Trust gateway configuration
-   - Access organization
+3. **Some resources survive the account** and must be removed first (the scripts do this in `--execute` mode). The docs call out two as *not automatically deleted*:
+   - **Logpush jobs** — "will continue delivering logs after account deletion"
+   - **Zero Trust Gateway configuration** — "may continue resolving DNS queries after account deletion"
+
+   The docs' cleanup sequence also deletes the **Access organization** before the account, so the scripts do all three.
 4. **Order of operations** (per docs): gateway configuration → Access organization → account. Subscriptions are not listed as a required manual pre-delete in the docs, but leftover paid subscriptions are the most common cause of a failed delete in practice — the `--execute` flow aborts if any are visible; cancel those via billing first.
 
 ---
@@ -50,9 +51,11 @@ cp config.example.sh config.sh
 
 | Script | Permissions needed |
 |---|---|
-| `precheck.sh` (read-only) | Account Settings:Read, Zone:Read, Logpush:Read, Zero Trust:Read |
+| `precheck.sh` (read-only) | Account Settings:Read, Zone:Read, Logpush:Read, Zero Trust:Read, Memberships:Read, plus billing read for the subscriptions section |
 | `leave-account.sh` | Membership:Read, Membership:Edit |
-| `delete-account.sh --execute` | Account Settings:Write, Logpush:Edit, Zero Trust:Edit, plus tenant-admin authority over the account |
+| `delete-account.sh --execute` | Account Settings:Write, Logpush:Read, Logpush:Edit, Zero Trust:Edit, plus tenant-admin authority over the account |
+
+A missing permission does **not** degrade quietly: any section or inventory the credential cannot read is reported as `UNREADABLE`, and `--execute` aborts rather than treating "cannot see" as "nothing there". Grant the permissions above or expect the run to stop.
 
 The tenant-level deletion flow per the docs uses the **Global API Key**; an API token works if it belongs to the tenant admin user.
 
@@ -80,6 +83,8 @@ Sections:
 8. Members with access — confirm nobody else relies on this account
 9. Your membership entry for this account
 
+Exits `0` when every section was readable, `1` when any section was not — an unreadable section is printed as `UNREADABLE`, never as `none`.
+
 ### 2. Option A — hide the account from your dashboard
 
 ```bash
@@ -91,17 +96,21 @@ bash/leave-account.sh
 
 ```bash
 bash/delete-account.sh            # DRY RUN (default): shows the plan, changes nothing
-bash/delete-account.sh --execute  # real run: cleanup phases + deletion,
-                                  # still requires typing the full 32-char account ID
+bash/delete-account.sh --execute  # real run: typed confirmation, then cleanup + deletion
 ```
 
 What `--execute` does, in order:
-1. Subscription gate — aborts if any active subscriptions are visible (cancel via billing first)
-2. Deletes all Logpush jobs found on the account
-3. Deletes the Zero Trust gateway configuration
-4. Deletes the Access organization
-5. Deletes the account — after a typed confirmation of the full account ID
-6. Verifies deletion (expects HTTP 403/404 on a follow-up GET)
+1. **Typed confirmation, before any change** — prints the inventory of what will be destroyed, then requires the full account ID to be typed at an interactive terminal. Anything else aborts with nothing changed.
+2. Subscription gate — aborts if any active subscriptions are visible (cancel via billing first), and also aborts if the subscription list cannot be read
+3. Deletes all Logpush jobs found on the account — aborts if the inventory cannot be read
+4. Deletes the Zero Trust gateway configuration
+5. Deletes the Access organization
+6. Deletes the account
+7. Verifies deletion (expects HTTP 403/404 on a follow-up GET; exits non-zero otherwise)
+
+Steps 3–5 destroy Gateway policies and every Access app and policy in the account, which is why the confirmation comes before them rather than just before step 6.
+
+If the credential genuinely cannot read subscriptions and billing has been checked another way, `BILLING_VERIFIED=1 bash/delete-account.sh --execute` records that decision explicitly and continues past step 2 only.
 
 ### PowerShell equivalent (Windows / `pwsh` 7+)
 
@@ -118,11 +127,14 @@ powershell/delete-account.ps1 -Execute             # real run, typed account ID 
 ## Safety features
 
 - **Exact-name matching** (`==` / `-ceq`, not partial) — no fuzzy matching against lookalike production account names
-- **Dry-run default** on the deletion script; `--execute` / `-Execute` is the explicit opt-in
-- **Typed confirmation gates, interactive-only** — `LEAVE` for the reversible operation, the full account ID for the irreversible one; piped/redirected stdin is rejected (bash reads `/dev/tty`, PowerShell checks `[Console]::IsInputRedirected`)
+- **Duplicate names abort** — account names are not unique in Cloudflare; if two accounts share the exact target name, the scripts list both IDs and refuse to guess rather than acting on the first match
+- **Dry-run default** on the deletion script; `--execute` / `-Execute` is the explicit opt-in, and an unrecognised argument is an error rather than a silent dry run
+- **Typed confirmation before the first mutation, interactive-only** — `LEAVE` for the reversible operation, the full account ID for the irreversible one; the ID is asked before the cleanup phases, not after them; piped/redirected stdin is rejected (bash reads `/dev/tty`, PowerShell checks `[Console]::IsInputRedirected`)
+- **"Cannot see" is never "nothing there"** — an unreadable zone, logpush, gateway, Access, subscription or member listing is reported as `UNREADABLE` and stops an `--execute` run; a 403 is never rendered as "none"
 - **No pagination truncation** — all list endpoints fetch every page; a failed page aborts instead of silently capping at 50 items
-- **Cleanup-phase assertions** — every pre-delete cleanup phase must return 200/404 or the run aborts before the account delete
-- **Verification steps** after every mutation
+- **Cleanup-phase assertions** — every pre-delete cleanup phase must return 200/404 *and* must not report `success: false` on a 200, or the run aborts before the account delete
+- **Verification steps** after every mutation, with a non-zero exit when the resource is still there
+- **Credentials stay out of `ps`** — the bash port passes auth headers to curl on stdin (`curl -K -`) instead of the command line
 - **Read-only preflight** shares exactly what will be destroyed, before anything runs
 
 ## Recommended customer workflow

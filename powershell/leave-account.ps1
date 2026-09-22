@@ -20,11 +20,19 @@ if ([string]::IsNullOrWhiteSpace($TargetName)) {
 Write-Host "== Find membership for account '$TargetName' =="
 $mem = Invoke-CfApiAll GET "/memberships"
 if ($mem.Status -ne 200) { Write-Host "ERROR: memberships listing returned HTTP $($mem.Status)" -ForegroundColor Red; exit 1 }
-$entry = $mem.Json.result | Where-Object { $_.account.name -ceq $TargetName } | Select-Object -First 1
-if (-not $entry) {
+$entries = @($mem.Json.result | Where-Object { $_.account.name -ceq $TargetName })
+if ($entries.Count -eq 0) {
     Write-Host "No membership found for that name. Nothing to do."
     exit 1
 }
+if ($entries.Count -gt 1) {
+    # Account names are not unique, so one name can map to several memberships.
+    Write-Host "ERROR: $($entries.Count) memberships match the exact name '$TargetName':" -ForegroundColor Red
+    $entries | ForEach-Object { Write-Host ("  membership_id={0}  account_id={1}" -f $_.id, $_.account.id) }
+    Write-Host "Refusing to guess which one to leave." -ForegroundColor Red
+    exit 1
+}
+$entry = $entries[0]
 
 $roles = ($entry.roles | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.name } }) -join ","
 Write-Host ("account={0}  id={1}  status={2}  roles={3}" -f $entry.account.name, $entry.account.id, $entry.status, $roles)
@@ -36,15 +44,23 @@ Write-Host "The account itself is NOT deleted."
 Confirm-OrAbort -Prompt "Type 'LEAVE' to confirm: " -Expected "LEAVE"
 
 $d = Invoke-CfApi DELETE "/memberships/$($entry.id)"
-Write-Host ("success={0}  errors={1}" -f $d.Json.success, (Get-ErrorSummary $d.Json))
+Write-Host (Get-CfSummary -Response $d)
+if ($d.Status -ne 200) {
+    Write-Host "ERROR: membership DELETE returned HTTP $($d.Status) - nothing was removed." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "== Verification: membership should be gone =="
 $v = Invoke-CfApiAll GET "/memberships"
-if ($v.Status -ne 200) { Write-Host "ERROR: memberships listing returned HTTP $($v.Status)" -ForegroundColor Red; exit 1 }
-$still = $v.Json.result | Where-Object { $_.account.name -ceq $TargetName }
-if (-not $still) {
+if ($v.Status -ne 200) {
+    Write-Host "ERROR: could not re-read memberships (HTTP $($v.Status)) - deletion unverified." -ForegroundColor Red
+    exit 1
+}
+$still = @($v.Json.result | Where-Object { $_.account.name -ceq $TargetName })
+if ($still.Count -eq 0) {
     Write-Host "membership removed - account no longer listed for this user"
 } else {
-    Write-Host "still present"
+    Write-Host "ERROR: membership still present after the delete." -ForegroundColor Red
+    exit 1
 }
