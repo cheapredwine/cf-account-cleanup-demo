@@ -67,7 +67,10 @@ practice, not listed in the docs' required list". Do not upgrade lore to documen
 
 ## Publishing hygiene (run before every push)
 
-- `git grep -inE "CF_API_TOKEN=\"[^\"]|CF_AUTH_KEY=\"[^\"]" $(git rev-list --all)` → must
+- Customer-name leak scan: `git grep -ic <SCRUBBED_NAME> $(git rev-list --all)` → must be clean.
+  Run locally with the actual scrubbed name; never commit the name itself into this repo
+  (including this file).
+- Secrets scan: `git grep -inE "CF_API_TOKEN=\"[^\"]|CF_AUTH_KEY=\"[^\"]" $(git rev-list --all)` → must
   be clean.
 - Confirm gitignored: `config.sh`, `config.ps1`.
 - Review `git log --oneline` — no customer names in commit messages.
