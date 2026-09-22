@@ -55,6 +55,8 @@ cp config.example.sh config.sh
 
 The tenant-level deletion flow per the docs uses the **Global API Key**; an API token works if it belongs to the tenant admin user.
 
+**Windows / PowerShell 7+** (`pwsh`): copy `config.example.ps1` to `config.ps1` and fill in the same values. The `.ps1` scripts mirror the `.sh` scripts exactly — same endpoints, same confirmation gates, same dry-run plan. No jq needed.
+
 ---
 
 ## Usage
@@ -99,6 +101,16 @@ What `--execute` does, in order:
 4. Deletes the Access organization
 5. Deletes the account — after a typed confirmation of the full account ID
 6. Verifies deletion (expects HTTP 403/404 on a follow-up GET)
+
+### PowerShell equivalent (Windows / `pwsh` 7+)
+
+```powershell
+./precheck.ps1                            # read-only preflight (same 9 sections)
+./precheck.ps1 -TargetAccountName "Other" # exact account name as parameter
+./leave-account.ps1                       # Option A (typed LEAVE gate)
+./delete-account.ps1                      # Option B dry run (default)
+./delete-account.ps1 -Execute             # real run, typed account ID gate
+```
 
 ---
 
