@@ -11,6 +11,8 @@
 
 . (Join-Path $PSScriptRoot "common.ps1")
 
+Assert-InteractiveTerminal
+
 $TargetName = $env:TARGET_ACCOUNT_NAME
 if ([string]::IsNullOrWhiteSpace($TargetName)) {
     Write-Host "ERROR: set TARGET_ACCOUNT_NAME in config.ps1" -ForegroundColor Red

@@ -104,16 +104,20 @@ function Get-CfSummary {
     "HTTP {0}  success={1}  errors={2}" -f $Response.Status, $success, $errs
 }
 
-# Confirm-OrAbort -Prompt "..." -Expected "TEXT"
-# Requires the operator to type EXPECTED_TEXT exactly (case-sensitive, like bash ==).
-# Rejects piped/redirected stdin and non-interactive sessions.
-function Confirm-OrAbort {
-    param([Parameter(Mandatory = $true)][string]$Prompt,
-          [Parameter(Mandatory = $true)][string]$Expected)
+# Assert-InteractiveTerminal — reject piped/redirected stdin before any API call.
+function Assert-InteractiveTerminal {
     if ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive) {
         Write-Host "Aborted: confirmation must come from an interactive terminal - piped stdin is rejected. Nothing was done." -ForegroundColor Red
         exit 1
     }
+}
+
+# Confirm-OrAbort -Prompt "..." -Expected "TEXT"
+# Requires the operator to type EXPECTED_TEXT exactly (case-sensitive, like bash ==).
+function Confirm-OrAbort {
+    param([Parameter(Mandatory = $true)][string]$Prompt,
+          [Parameter(Mandatory = $true)][string]$Expected)
+    Assert-InteractiveTerminal
     $answer = Read-Host $Prompt
     if ($answer -cne $Expected) {
         Write-Host "Aborted: confirmation text did not match. Nothing was done."

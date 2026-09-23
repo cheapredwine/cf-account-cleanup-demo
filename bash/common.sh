@@ -125,11 +125,19 @@ cf_all_to() {
   printf -v "$_cfa_out" '%s' "$_cfa_merged"
 }
 
+# assert_interactive_terminal — reject piped/redirected stdin before any API call.
+assert_interactive_terminal() {
+  if [[ ! -t 0 || ! -r /dev/tty ]]; then
+    echo "Aborted: confirmation must come from an interactive terminal - piped stdin is rejected. Nothing was done." >&2
+    exit 1
+  fi
+}
+
 # confirm_or_abort PROMPT EXPECTED_TEXT
 # Requires the operator to type EXPECTED_TEXT exactly, from an interactive TTY.
-# Reads /dev/tty so piped/redirected stdin can never satisfy the gate.
 confirm_or_abort() {
   local prompt="$1" expected="$2" answer=""
+  assert_interactive_terminal
   if ! read -r -p "$prompt" answer </dev/tty; then
     echo "Aborted: no interactive terminal available for confirmation. Nothing was done." >&2
     exit 1

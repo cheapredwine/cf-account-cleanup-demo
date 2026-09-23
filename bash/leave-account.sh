@@ -12,6 +12,8 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
+assert_interactive_terminal
+
 TARGET_NAME="${TARGET_ACCOUNT_NAME:?Set TARGET_ACCOUNT_NAME in config.sh}"
 
 echo "== Find membership for account '$TARGET_NAME' =="
