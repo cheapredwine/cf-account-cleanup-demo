@@ -80,6 +80,19 @@ function Get-LogpushInventory {
     return @{ Ok = $true; Status = 200; Ids = @($l.Json.result | ForEach-Object { $_.id }) }
 }
 
+function Assert-LogpushRemoved {
+    param([Parameter(Mandatory = $true)][string]$JobId)
+    $verify = Invoke-CfApiAll GET "/accounts/$AccountId/logpush/jobs"
+    if ($verify.Status -ne 200) {
+        Write-Host "ERROR: could not verify removal of logpush job $JobId (HTTP $($verify.Status)) - aborting before the account delete." -ForegroundColor Red
+        exit 1
+    }
+    if (@($verify.Json.result | Where-Object { "$($_.id)" -ceq $JobId }).Count -ne 0) {
+        Write-Host "ERROR: logpush job $JobId survived its DELETE - aborting before the account delete." -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host ""
 Write-Host "== Pre-deletion inventory =="
 $z = Invoke-CfApiAll GET "/zones?account.id=$AccountId"
@@ -91,7 +104,8 @@ if ($z.Status -ne 200) {
 $zones = ($z.Json.result | ForEach-Object { $_.name }) -join ","
 $logpush = Get-LogpushInventory
 $m = Invoke-CfApiAll GET "/accounts/$AccountId/members"
-$memberCount = if ($m.Status -eq 200) { $m.Json.result.Count } else { "?" }
+$membersReadable = $m.Status -eq 200
+$memberCount = if ($membersReadable) { $m.Json.result.Count } else { "?" }
 Write-Host "  zones that will be destroyed : $(if ($zones) { $zones } else { 'none' })"
 if ($logpush.Ok) {
     Write-Host "  logpush jobs to remove       : $(if ($logpush.Ids.Count) { $logpush.Ids -join ',' } else { '(none found)' })"
@@ -120,6 +134,12 @@ if (-not $Execute) {
     exit 0
 }
 
+if (-not $membersReadable) {
+    Write-Host "ERROR: could not list account members (HTTP $($m.Status)) - aborting before any change." -ForegroundColor Red
+    Write-Host "       Do not delete an account whose affected members cannot be shown." -ForegroundColor Red
+    exit 1
+}
+
 Write-Host ""
 Write-Host "== Confirmation (nothing has changed yet) =="
 Write-Host "This run will, in order: remove every logpush job, the Zero Trust gateway"
@@ -133,7 +153,7 @@ Write-Host "== Phase 0: subscription check (abort if active subscriptions exist)
 # The Tenant docs require Logpush/gateway/Access cleanup before deletion; paid
 # subscriptions are not listed there, but in practice a leftover subscription is
 # the most common cause of a failed delete. Cancel those via billing first.
-$s = Invoke-CfApi GET "/accounts/$AccountId/subscriptions"
+$s = Invoke-CfApiAll GET "/accounts/$AccountId/subscriptions"
 if ($s.Status -eq 200) {
     $subs = @($s.Json.result | Where-Object { $null -ne $_ })
     if ($subs.Count -gt 0) {
@@ -168,6 +188,7 @@ foreach ($jobId in $logpush.Ids) {
     $d = Invoke-CfApi DELETE "/accounts/$AccountId/logpush/jobs/$jobId"
     Write-Host ("    {0}" -f (Get-CfSummary -Response $d))
     Assert-CleanupOk -Label "logpush job $jobId DELETE" -Response $d
+    Assert-LogpushRemoved -JobId "$jobId"
 }
 
 Write-Host ""
@@ -175,12 +196,22 @@ Write-Host "== Phase 2: remove Zero Trust gateway configuration =="
 $g = Invoke-CfApi DELETE "/accounts/$AccountId/gateway"
 Write-Host ("  gateway DELETE: {0}" -f (Get-CfSummary -Response $g))
 Assert-CleanupOk -Label "gateway DELETE" -Response $g
+$verifyGateway = Invoke-CfApi GET "/accounts/$AccountId/gateway"
+if ($verifyGateway.Status -ne 404) {
+    Write-Host "ERROR: gateway configuration survived its DELETE (GET returned HTTP $($verifyGateway.Status)) - aborting before the account delete." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "== Phase 3: remove Access organization =="
 $a = Invoke-CfApi DELETE "/accounts/$AccountId/access/organizations"
 Write-Host ("  Access organization DELETE: {0}" -f (Get-CfSummary -Response $a))
 Assert-CleanupOk -Label "Access organization DELETE" -Response $a
+$verifyAccess = Invoke-CfApi GET "/accounts/$AccountId/access/organizations"
+if ($verifyAccess.Status -ne 404) {
+    Write-Host "ERROR: Access organization survived its DELETE (GET returned HTTP $($verifyAccess.Status)) - aborting before the account delete." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "== Phase 4: delete the account (point of no return) =="

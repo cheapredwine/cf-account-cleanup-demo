@@ -83,6 +83,21 @@ refresh_logpush_ids() {
   LOGPUSH_STATUS="$CF_ALL_STATUS"
 }
 
+# verify_logpush_removed JOB_ID — re-list every page after deletion so a 200
+# response alone cannot let a surviving job slip through to account deletion.
+verify_logpush_removed() {
+  local job_id="$1" remaining
+  if ! cf_all_to VERIFY_LOGPUSH GET "/accounts/$ACCOUNT_ID/logpush/jobs"; then
+    echo "ERROR: could not verify removal of logpush job $job_id (HTTP $CF_ALL_STATUS) — aborting before the account delete." >&2
+    exit 1
+  fi
+  remaining=$(printf '%s' "$VERIFY_LOGPUSH" | jq --arg id "$job_id" '[.result[]? | select((.id | tostring) == $id)] | length')
+  if [[ "$remaining" -ne 0 ]]; then
+    echo "ERROR: logpush job $job_id survived its DELETE — aborting before the account delete." >&2
+    exit 1
+  fi
+}
+
 echo "== Locate account by EXACT name: '$TARGET_NAME' =="
 if ! cf_all_to ACCOUNTS GET "/accounts"; then
   echo "ERROR: could not list accounts (HTTP $CF_ALL_STATUS). Aborting." >&2
@@ -116,7 +131,10 @@ ZONES=$(printf '%s' "$ZONES_RESP" | jq -r '[.result[]?.name] | join(",")')
 refresh_logpush_ids
 cf_all_to MEMBERS GET "/accounts/$ACCOUNT_ID/members" 2>/dev/null || true
 MEMBER_COUNT='?'
+MEMBERS_READABLE=false
+MEMBERS_STATUS="$CF_ALL_STATUS"
 if [[ "$CF_ALL_STATUS" == "200" ]]; then
+  MEMBERS_READABLE=true
   MEMBER_COUNT=$(printf '%s' "$MEMBERS" | jq '(.result // []) | length')
 fi
 echo "  zones that will be destroyed : ${ZONES:-none}"
@@ -147,6 +165,12 @@ if ! $EXECUTE; then
   exit 0
 fi
 
+if ! $MEMBERS_READABLE; then
+  echo "ERROR: could not list account members (HTTP $MEMBERS_STATUS) — aborting before any change." >&2
+  echo "       Do not delete an account whose affected members cannot be shown." >&2
+  exit 1
+fi
+
 echo
 echo "== Confirmation (nothing has changed yet) =="
 echo "This run will, in order: remove every logpush job, the Zero Trust gateway"
@@ -160,20 +184,18 @@ echo "== Phase 0: subscription check (abort if active subscriptions exist) =="
 # The Tenant docs require Logpush/gateway/Access cleanup before deletion; paid
 # subscriptions are not listed there, but in practice a leftover subscription is
 # the most common cause of a failed delete. Cancel those via billing first.
-SUB_RESP=$(cf GET "/accounts/$ACCOUNT_ID/subscriptions")
-SUB_STATUS=$(cf_status "$SUB_RESP")
-if [[ "$SUB_STATUS" == "200" ]]; then
-  SUB_COUNT=$(cf_body "$SUB_RESP" | jq '(.result // [] | length)')
+if cf_all_to SUBSCRIPTIONS GET "/accounts/$ACCOUNT_ID/subscriptions"; then
+  SUB_COUNT=$(printf '%s' "$SUBSCRIPTIONS" | jq '(.result // [] | length)')
   if [[ "$SUB_COUNT" -gt 0 ]]; then
     echo "ERROR: $SUB_COUNT active subscription(s) found. Cancel them via billing first, then re-run." >&2
-    cf_body "$SUB_RESP" | jq -r '.result[]? | "  sub \(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")"'
+    printf '%s' "$SUBSCRIPTIONS" | jq -r '.result[]? | "  sub \(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")"'
     exit 1
   fi
   echo "  no active subscriptions"
 else
   # An unreadable subscription list is not a pass. Require the operator to say
   # explicitly that billing was checked out of band.
-  echo "ERROR: subscription list not visible to this credential (HTTP $SUB_STATUS)." >&2
+  echo "ERROR: subscription list not visible to this credential (HTTP $CF_ALL_STATUS)." >&2
   echo "       This gate cannot confirm the account is unbilled." >&2
   echo "       Check billing in the dashboard, then re-run with BILLING_VERIFIED=1 to proceed." >&2
   if [[ "${BILLING_VERIFIED:-}" != "1" ]]; then
@@ -202,6 +224,7 @@ while IFS= read -r job_id; do
   STATUS=$(cf_status "$RESP")
   echo "    $(cf_summary "$RESP" "$STATUS")"
   assert_cleanup_ok "logpush job $job_id DELETE" "$RESP" "$STATUS"
+  verify_logpush_removed "$job_id"
 done <<< "$LOGPUSH_IDS"
 
 echo
@@ -210,6 +233,11 @@ RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/gateway")
 STATUS=$(cf_status "$RESP")
 echo "  gateway DELETE: $(cf_summary "$RESP" "$STATUS")"
 assert_cleanup_ok "gateway DELETE" "$RESP" "$STATUS"
+VERIFY_STATUS=$(cf_status "$(cf GET "/accounts/$ACCOUNT_ID/gateway")")
+if [[ "$VERIFY_STATUS" != "404" ]]; then
+  echo "ERROR: gateway configuration survived its DELETE (GET returned HTTP $VERIFY_STATUS) — aborting before the account delete." >&2
+  exit 1
+fi
 
 echo
 echo "== Phase 3: remove Access organization =="
@@ -217,6 +245,11 @@ RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/access/organizations")
 STATUS=$(cf_status "$RESP")
 echo "  Access organization DELETE: $(cf_summary "$RESP" "$STATUS")"
 assert_cleanup_ok "Access organization DELETE" "$RESP" "$STATUS"
+VERIFY_STATUS=$(cf_status "$(cf GET "/accounts/$ACCOUNT_ID/access/organizations")")
+if [[ "$VERIFY_STATUS" != "404" ]]; then
+  echo "ERROR: Access organization survived its DELETE (GET returned HTTP $VERIFY_STATUS) — aborting before the account delete." >&2
+  exit 1
+fi
 
 echo
 echo "== Phase 4: delete the account (point of no return) =="

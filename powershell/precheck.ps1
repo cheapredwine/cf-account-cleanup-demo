@@ -90,7 +90,7 @@ if ($z.Status -ne 200) {
 
 Write-Host ""
 Write-Host "== 4. Subscriptions/entitlements (cancel BEFORE deletion; active subs are the most common cause of a failed delete) =="
-$s = Invoke-CfApi GET "/accounts/$AccountId/subscriptions"
+$s = Invoke-CfApiAll GET "/accounts/$AccountId/subscriptions"
 if ($s.Status -ne 200) {
     Write-Unreadable -Label "subscription list" -Status $s.Status
 } else {

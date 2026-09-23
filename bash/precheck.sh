@@ -73,12 +73,10 @@ fi
 
 echo
 echo "== 4. Subscriptions/entitlements (cancel BEFORE deletion; active subs are the most common cause of a failed delete) =="
-SUB_RESP=$(cf GET "/accounts/$ACCOUNT_ID/subscriptions")
-SUB_STATUS=$(cf_status "$SUB_RESP")
-if [[ "$SUB_STATUS" == "200" ]]; then
-  cf_body "$SUB_RESP" | jq -r 'if ((.result // []) | length) == 0 then "none" else .result[]? | "\(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")" end'
+if cf_all_to SUBSCRIPTIONS GET "/accounts/$ACCOUNT_ID/subscriptions"; then
+  printf '%s' "$SUBSCRIPTIONS" | jq -r 'if ((.result // []) | length) == 0 then "none" else .result[]? | "\(.id // "?")  product=\(.product.name // .product_name // "?")  state=\(.state // "?")" end'
 else
-  unreadable "subscription list" "$SUB_STATUS"
+  unreadable "subscription list" "$CF_ALL_STATUS"
 fi
 
 echo
