@@ -86,10 +86,16 @@ function Assert-Absent {
     param([Parameter(Mandatory = $true)][string]$Label,
           [Parameter(Mandatory = $true)][string]$Path)
     $verify = Invoke-CfApi GET $Path
-    if ($verify.Status -eq 404) { return }
+    if ($verify.Status -eq 404) {
+        Write-Host "  verified: $Label is gone"
+        return
+    }
     if ($verify.Status -eq 200) {
         $id = if ($verify.Json -and $verify.Json.result) { $verify.Json.result.id } else { $null }
-        if ($null -eq $id -or [string]::IsNullOrWhiteSpace([string]$id)) { return }
+        if ($null -eq $id -or [string]::IsNullOrWhiteSpace([string]$id)) {
+            Write-Host "  verified: $Label is gone"
+            return
+        }
         Write-Host "ERROR: $Label is still present after its DELETE - aborting before the account delete." -ForegroundColor Red
         exit 1
     }
@@ -131,8 +137,8 @@ if (-not $Execute) {
     Write-Host ""
     Write-Host "DRY RUN - nothing was changed."
     Write-Host "Plan if executed:"
-    Write-Host "  gate. require complete logpush and member inventories before confirmation"
-    Write-Host "  gate. type the full account ID to confirm - asked BEFORE any change is made"
+    Write-Host "  gate 1. require complete logpush and member inventories before confirmation"
+    Write-Host "  gate 2. type the full account ID to confirm - asked BEFORE any change is made"
     Write-Host "  0. subscriptions: abort if any active subscriptions exist (cancel them"
     Write-Host "     via billing first - list every page before deciding)"
     Write-Host "  1. DELETE logpush jobs: $(if ($logpush.Ids.Count) { $logpush.Ids -join ',' } else { '(none)' }); then re-list them and require that none remain"
@@ -212,6 +218,7 @@ if ($logpush.Ids.Count -gt 0) {
     $logpush.Ids | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     exit 1
 }
+Write-Host "  verified: no logpush jobs remain"
 
 Write-Host ""
 Write-Host "== Phase 2: remove Zero Trust gateway configuration =="

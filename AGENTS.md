@@ -32,21 +32,21 @@ Customer-facing doc: `README.md`. Dev tool: `powershell/.syntax-check.ps1` (Powe
    does not enforce unique account names either, so two exact matches must abort with both IDs
    listed; never fall back to the first match.
 4. **"Cannot see" is never "nothing there".** A non-200 on any inventory (zones, logpush,
-    gateway, Access, subscriptions, members) must be surfaced as unreadable and must abort an
-    execute run — never rendered as "none", never silently skipped. Otherwise a credential
-    lacking Logpush:Read deletes an account whose logpush jobs keep shipping logs, which is
-    exactly the outcome the docs warn about. An unreadable pre-confirmation inventory must abort
-    before the account-ID prompt.
+   gateway, Access, subscriptions, members) must be surfaced as unreadable and must abort an
+   execute run — never rendered as "none", never silently skipped. Otherwise a credential
+   lacking Logpush:Read deletes an account whose logpush jobs keep shipping logs, which is
+   exactly the outcome the docs warn about. An unreadable pre-confirmation inventory must abort
+   before the account-ID prompt.
 5. **A DELETE response is not proof.** Every cleanup phase finishes only after a follow-up read
-    says the resource is gone: Logpush is re-listed and empty; Gateway and Access are absent as
-    404 or 200 with no ID. An unverifiable phase aborts before Phase 4; never reduce these checks
-    to status checks on the DELETE response.
+   says the resource is gone: Logpush is re-listed and empty; Gateway and Access are absent as
+   404 or 200 with no ID. An unverifiable phase aborts before Phase 4; never reduce these checks
+   to status checks on the DELETE response.
 6. **Safety patterns must survive every edit:** dry-run default with explicit `--execute` /
-    `-Execute` opt-in, typed account-ID gate before any mutation, Phase 0 subscription gate
-    (abort if active subs are visible *or* if the list is unreadable, unless the operator sets
-    `BILLING_VERIFIED=1`), cleanup phases (1-3) asserting 200/404 and not `success:false` before
-    the irreversible delete, verification step after every mutation with a non-zero exit when the
-    resource survives, read-only precheck that inspects all pre-deletion resources.
+   `-Execute` opt-in, typed account-ID gate before any mutation, Phase 0 subscription gate
+   (abort if active subs are visible *or* if the list is unreadable, unless the operator sets
+   `BILLING_VERIFIED=1`), cleanup phases (1-3) asserting 200/404 and not `success:false` before
+   the irreversible delete, verification step after every mutation with a non-zero exit when the
+   resource survives, read-only precheck that inspects all pre-deletion resources.
 7. **No secrets, no real customer or account names in committed files.** This repo is public. A
    real customer name was scrubbed before publishing — do not reintroduce one. `bash/config.sh`
    and `powershell/config.ps1` are gitignored; keep credentials in them, never in scripts or
@@ -84,10 +84,10 @@ listed in the docs' required list". Do not upgrade lore to documented fact.
 - Endpoints, headers, and credential handling live in `bash/common.sh` / `powershell/common.ps1`
   only. Each loads its config from its own directory, independent of cwd.
 - List endpoints must use `cf_all_to` (bash) / `Invoke-CfApiAll` (PowerShell) — they fetch every
-   page and abort on a non-200 page. Never call a list endpoint with a bare `per_page` cap;
-   silent truncation is a real hazard (e.g. logpush job 51+ or a page-2 subscription invisible to
-   cleanup). This applies to every list read, including subscriptions. The helpers own paging: do
-   not embed `page`/`per_page` in the paths passed to them.
+  page and abort on a non-200 page. Never call a list endpoint with a bare `per_page` cap;
+  silent truncation is a real hazard (e.g. logpush job 51+ or a page-2 subscription invisible to
+  cleanup). This applies to every list read, including subscriptions. The helpers own paging: do
+  not embed `page`/`per_page` in the paths passed to them.
 - Bash only: `cf_all_to OUTVAR METHOD PATH` assigns in the CURRENT shell (printf -v) and sets
   `CF_ALL_STATUS`. NEVER capture it in `$( )` — a command substitution is a subshell and the
   status global would be lost (tolerant branches would misread stale values). The same applies
@@ -122,7 +122,7 @@ listed in the docs' required list". Do not upgrade lore to documented fact.
   abort with the piped-stdin error before any mutation; the bash gate must abort without a TTY.
 - Gate ordering: in a `--execute` / `-Execute` run against a throwaway account, aborting the
   account-ID prompt must leave the logpush jobs, gateway configuration and Access organization
-   intact. If anything was already deleted when the prompt appeared, the ordering has regressed.
+  intact. If anything was already deleted when the prompt appeared, the ordering has regressed.
 - With a credential lacking Logpush:Read or member read, an execute run must abort before the
   prompt and name each unreadable listing.
 - Removing a `verify_absent` / `Assert-Absent` call or the final Logpush re-list is a regression,

@@ -90,11 +90,13 @@ verify_absent() {
   resp=$(cf GET "$path")
   status=$(cf_status "$resp")
   if [[ "$status" == "404" ]]; then
+    echo "  verified: $label is gone"
     return
   fi
   if [[ "$status" == "200" ]]; then
     id=$(cf_body "$resp" | jq -r '.result.id // empty' 2>/dev/null || true)
     if [[ -z "$id" ]]; then
+      echo "  verified: $label is gone"
       return
     fi
     echo "ERROR: $label is still present after its DELETE — aborting before the account delete." >&2
@@ -156,35 +158,44 @@ else
   echo "  member count                 : UNREADABLE (HTTP $MEMBERS_STATUS) — not the same as zero"
 fi
 
-UNREADABLE_INVENTORIES=()
-if ! $LOGPUSH_READABLE; then UNREADABLE_INVENTORIES+=("logpush jobs (HTTP $LOGPUSH_STATUS)"); fi
-if ! $MEMBERS_READABLE; then UNREADABLE_INVENTORIES+=("account members (HTTP $MEMBERS_STATUS)"); fi
+INVENTORY_GAPS=0
+INVENTORY_GAP_DETAILS=""
+if ! $LOGPUSH_READABLE; then
+  INVENTORY_GAPS=$((INVENTORY_GAPS + 1))
+  INVENTORY_GAP_DETAILS+="logpush jobs (HTTP $LOGPUSH_STATUS)"$'\n'
+fi
+if ! $MEMBERS_READABLE; then
+  INVENTORY_GAPS=$((INVENTORY_GAPS + 1))
+  INVENTORY_GAP_DETAILS+="account members (HTTP $MEMBERS_STATUS)"$'\n'
+fi
 
 if ! $EXECUTE; then
   echo
   echo "DRY RUN - nothing was changed."
   echo "Plan if executed:"
-  echo "  gate. require complete logpush and member inventories before confirmation"
-  echo "  gate. type the full account ID to confirm - asked BEFORE any change is made"
+  echo "  gate 1. require complete logpush and member inventories before confirmation"
+  echo "  gate 2. type the full account ID to confirm - asked BEFORE any change is made"
   echo "  0. subscriptions: abort if any active subscriptions exist (cancel them"
   echo "     via billing first - list every page before deciding)"
   echo "  1. DELETE logpush jobs: ${LOGPUSH_IDS:-(none)}; then re-list them and require that none remain"
   echo "  2. DELETE /accounts/$ACCOUNT_ID/gateway            (Zero Trust gateway config); then read it back and require it to be gone"
   echo "  3. DELETE /accounts/$ACCOUNT_ID/access/organizations; then read it back and require it to be gone"
   echo "  4. DELETE /accounts/$ACCOUNT_ID                    (permanent)"
-  if [[ ${#UNREADABLE_INVENTORIES[@]} -gt 0 ]]; then
+  if [[ "$INVENTORY_GAPS" -gt 0 ]]; then
     echo
-    echo "NOTE: unreadable inventory: ${UNREADABLE_INVENTORIES[*]}."
+    echo "NOTE: unreadable inventory:"
+    printf '%s' "$INVENTORY_GAP_DETAILS" | sed 's/^/      /'
     echo "      An execute run would abort before the confirmation prompt."
   fi
   exit 0
 fi
 
-if [[ ${#UNREADABLE_INVENTORIES[@]} -gt 0 ]]; then
+if [[ "$INVENTORY_GAPS" -gt 0 ]]; then
   echo "ERROR: pre-deletion inventory incomplete — aborting before the confirmation prompt." >&2
-  for inventory in "${UNREADABLE_INVENTORIES[@]}"; do
+  while IFS= read -r inventory; do
+    [[ -z "$inventory" ]] && continue
     echo "       UNREADABLE: $inventory" >&2
-  done
+  done <<< "$INVENTORY_GAP_DETAILS"
   exit 1
 fi
 
@@ -252,6 +263,7 @@ if [[ -n "$LOGPUSH_IDS" ]]; then
   printf '%s\n' "$LOGPUSH_IDS" | sed 's/^/  /' >&2
   exit 1
 fi
+echo "  verified: no logpush jobs remain"
 
 echo
 echo "== Phase 2: remove Zero Trust gateway configuration =="
