@@ -147,7 +147,8 @@ if (-not $Execute) {
     Write-Host "  4. DELETE /accounts/$AccountId                    (permanent)"
     if ($unreadableInventories.Count -gt 0) {
         Write-Host ""
-        Write-Host "NOTE: unreadable inventory: $($unreadableInventories -join ', ')."
+        Write-Host "NOTE: unreadable inventory:"
+        $unreadableInventories | ForEach-Object { Write-Host "      $_" }
         Write-Host "      An execute run would abort before the confirmation prompt."
     }
     exit 0
