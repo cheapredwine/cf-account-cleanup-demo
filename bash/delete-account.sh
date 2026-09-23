@@ -17,11 +17,12 @@
 #   * Subscriptions: the Tenant docs do not list them as a manual pre-delete,
 #     but in practice leftover paid subscriptions are the most common cause of a
 #     failed delete. Phase 0 aborts if any are visible; cancel via billing first.
-#   * The typed account-ID confirmation happens BEFORE any change is made — the
-#     cleanup phases destroy Gateway policies and the Access organization, which
-#     is not something to do on an unconfirmed target.
+#   * An unreadable Logpush or member inventory aborts BEFORE the typed account-ID
+#     confirmation. The confirmation happens before any change because cleanup
+#     destroys Gateway policies and the Access organization.
 #   * Cleanup phases (1-3) must return 200/404 AND not report success=false, or
-#     the run aborts BEFORE the irreversible account delete.
+#     the run aborts BEFORE the irreversible account delete. Each phase is then
+#     verified by a follow-up read before the account is deleted.
 #   * Order of operations (docs): gateway config -> access organization -> account.
 
 set -euo pipefail
@@ -83,19 +84,25 @@ refresh_logpush_ids() {
   LOGPUSH_STATUS="$CF_ALL_STATUS"
 }
 
-# verify_logpush_removed JOB_ID — re-list every page after deletion so a 200
-# response alone cannot let a surviving job slip through to account deletion.
-verify_logpush_removed() {
-  local job_id="$1" remaining
-  if ! cf_all_to VERIFY_LOGPUSH GET "/accounts/$ACCOUNT_ID/logpush/jobs"; then
-    echo "ERROR: could not verify removal of logpush job $job_id (HTTP $CF_ALL_STATUS) — aborting before the account delete." >&2
+# verify_absent LABEL PATH — accept an absent endpoint as 404 or 200 with no ID.
+verify_absent() {
+  local label="$1" path="$2" resp status id
+  resp=$(cf GET "$path")
+  status=$(cf_status "$resp")
+  if [[ "$status" == "404" ]]; then
+    return
+  fi
+  if [[ "$status" == "200" ]]; then
+    id=$(cf_body "$resp" | jq -r '.result.id // empty' 2>/dev/null || true)
+    if [[ -z "$id" ]]; then
+      return
+    fi
+    echo "ERROR: $label is still present after its DELETE — aborting before the account delete." >&2
     exit 1
   fi
-  remaining=$(printf '%s' "$VERIFY_LOGPUSH" | jq --arg id "$job_id" '[.result[]? | select((.id | tostring) == $id)] | length')
-  if [[ "$remaining" -ne 0 ]]; then
-    echo "ERROR: logpush job $job_id survived its DELETE — aborting before the account delete." >&2
-    exit 1
-  fi
+  echo "ERROR: could not verify $label is gone (GET $path returned HTTP $status)." >&2
+  echo "       Grant read access to this path and re-run; aborting before the account delete." >&2
+  exit 1
 }
 
 echo "== Locate account by EXACT name: '$TARGET_NAME' =="
@@ -143,31 +150,41 @@ if $LOGPUSH_READABLE; then
 else
   echo "  logpush jobs to remove       : UNREADABLE (HTTP $LOGPUSH_STATUS) — not the same as none"
 fi
-echo "  member count                 : $MEMBER_COUNT"
+if $MEMBERS_READABLE; then
+  echo "  member count                 : $MEMBER_COUNT"
+else
+  echo "  member count                 : UNREADABLE (HTTP $MEMBERS_STATUS) — not the same as zero"
+fi
+
+UNREADABLE_INVENTORIES=()
+if ! $LOGPUSH_READABLE; then UNREADABLE_INVENTORIES+=("logpush jobs (HTTP $LOGPUSH_STATUS)"); fi
+if ! $MEMBERS_READABLE; then UNREADABLE_INVENTORIES+=("account members (HTTP $MEMBERS_STATUS)"); fi
 
 if ! $EXECUTE; then
   echo
-  echo "DRY RUN — nothing was changed."
-  echo "Plan if run with --execute:"
-  echo "  gate. type the full account ID to confirm — asked BEFORE any change is made"
+  echo "DRY RUN - nothing was changed."
+  echo "Plan if executed:"
+  echo "  gate. require complete logpush and member inventories before confirmation"
+  echo "  gate. type the full account ID to confirm - asked BEFORE any change is made"
   echo "  0. subscriptions: abort if any active subscriptions exist (cancel them"
-  echo "     via billing first — leftover subs are the most common cause of a failed delete)"
-  echo "  1. DELETE logpush jobs: ${LOGPUSH_IDS:-(none)}"
-  echo "  2. DELETE /accounts/$ACCOUNT_ID/gateway            (Zero Trust gateway config)"
-  echo "  3. DELETE /accounts/$ACCOUNT_ID/access/organizations"
+  echo "     via billing first - list every page before deciding)"
+  echo "  1. DELETE logpush jobs: ${LOGPUSH_IDS:-(none)}; then re-list them and require that none remain"
+  echo "  2. DELETE /accounts/$ACCOUNT_ID/gateway            (Zero Trust gateway config); then read it back and require it to be gone"
+  echo "  3. DELETE /accounts/$ACCOUNT_ID/access/organizations; then read it back and require it to be gone"
   echo "  4. DELETE /accounts/$ACCOUNT_ID                    (permanent)"
-  if ! $LOGPUSH_READABLE; then
+  if [[ ${#UNREADABLE_INVENTORIES[@]} -gt 0 ]]; then
     echo
-    echo "NOTE: the logpush inventory could not be read, so step 1 cannot be planned."
-    echo "      --execute would abort there rather than delete the account with live"
-    echo "      logpush jobs still attached."
+    echo "NOTE: unreadable inventory: ${UNREADABLE_INVENTORIES[*]}."
+    echo "      An execute run would abort before the confirmation prompt."
   fi
   exit 0
 fi
 
-if ! $MEMBERS_READABLE; then
-  echo "ERROR: could not list account members (HTTP $MEMBERS_STATUS) — aborting before any change." >&2
-  echo "       Do not delete an account whose affected members cannot be shown." >&2
+if [[ ${#UNREADABLE_INVENTORIES[@]} -gt 0 ]]; then
+  echo "ERROR: pre-deletion inventory incomplete — aborting before the confirmation prompt." >&2
+  for inventory in "${UNREADABLE_INVENTORIES[@]}"; do
+    echo "       UNREADABLE: $inventory" >&2
+  done
   exit 1
 fi
 
@@ -224,8 +241,17 @@ while IFS= read -r job_id; do
   STATUS=$(cf_status "$RESP")
   echo "    $(cf_summary "$RESP" "$STATUS")"
   assert_cleanup_ok "logpush job $job_id DELETE" "$RESP" "$STATUS"
-  verify_logpush_removed "$job_id"
 done <<< "$LOGPUSH_IDS"
+refresh_logpush_ids
+if ! $LOGPUSH_READABLE; then
+  echo "ERROR: could not verify logpush cleanup (HTTP $LOGPUSH_STATUS) — aborting before the account delete." >&2
+  exit 1
+fi
+if [[ -n "$LOGPUSH_IDS" ]]; then
+  echo "ERROR: logpush jobs remain after cleanup — aborting before the account delete:" >&2
+  printf '%s\n' "$LOGPUSH_IDS" | sed 's/^/  /' >&2
+  exit 1
+fi
 
 echo
 echo "== Phase 2: remove Zero Trust gateway configuration =="
@@ -233,11 +259,7 @@ RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/gateway")
 STATUS=$(cf_status "$RESP")
 echo "  gateway DELETE: $(cf_summary "$RESP" "$STATUS")"
 assert_cleanup_ok "gateway DELETE" "$RESP" "$STATUS"
-VERIFY_STATUS=$(cf_status "$(cf GET "/accounts/$ACCOUNT_ID/gateway")")
-if [[ "$VERIFY_STATUS" != "404" ]]; then
-  echo "ERROR: gateway configuration survived its DELETE (GET returned HTTP $VERIFY_STATUS) — aborting before the account delete." >&2
-  exit 1
-fi
+verify_absent "gateway configuration" "/accounts/$ACCOUNT_ID/gateway"
 
 echo
 echo "== Phase 3: remove Access organization =="
@@ -245,11 +267,7 @@ RESP=$(cf DELETE "/accounts/$ACCOUNT_ID/access/organizations")
 STATUS=$(cf_status "$RESP")
 echo "  Access organization DELETE: $(cf_summary "$RESP" "$STATUS")"
 assert_cleanup_ok "Access organization DELETE" "$RESP" "$STATUS"
-VERIFY_STATUS=$(cf_status "$(cf GET "/accounts/$ACCOUNT_ID/access/organizations")")
-if [[ "$VERIFY_STATUS" != "404" ]]; then
-  echo "ERROR: Access organization survived its DELETE (GET returned HTTP $VERIFY_STATUS) — aborting before the account delete." >&2
-  exit 1
-fi
+verify_absent "Access organization" "/accounts/$ACCOUNT_ID/access/organizations"
 
 echo
 echo "== Phase 4: delete the account (point of no return) =="

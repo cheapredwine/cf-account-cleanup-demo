@@ -17,11 +17,12 @@
 #   * Subscriptions: the Tenant docs do not list them as a manual pre-delete,
 #     but in practice leftover paid subscriptions are the most common cause of a
 #     failed delete. Phase 0 aborts if any are visible; cancel via billing first.
-#   * The typed account-ID confirmation happens BEFORE any change is made — the
-#     cleanup phases destroy Gateway policies and the Access organization, which
-#     is not something to do on an unconfirmed target.
+#   * An unreadable Logpush or member inventory aborts BEFORE the typed account-ID
+#     confirmation. The confirmation happens before any change because cleanup
+#     destroys Gateway policies and the Access organization.
 #   * Cleanup phases (1-3) must return 200/404 AND not report success=false, or
-#     the run aborts BEFORE the irreversible account delete.
+#     the run aborts BEFORE the irreversible account delete. Each phase is then
+#     verified by a follow-up read before the account is deleted.
 #   * Order of operations (docs): gateway config -> access organization -> account.
 
 param([switch]$Execute)
@@ -80,17 +81,21 @@ function Get-LogpushInventory {
     return @{ Ok = $true; Status = 200; Ids = @($l.Json.result | ForEach-Object { $_.id }) }
 }
 
-function Assert-LogpushRemoved {
-    param([Parameter(Mandatory = $true)][string]$JobId)
-    $verify = Invoke-CfApiAll GET "/accounts/$AccountId/logpush/jobs"
-    if ($verify.Status -ne 200) {
-        Write-Host "ERROR: could not verify removal of logpush job $JobId (HTTP $($verify.Status)) - aborting before the account delete." -ForegroundColor Red
+# Assert-Absent — accept an absent endpoint as 404 or 200 with no ID.
+function Assert-Absent {
+    param([Parameter(Mandatory = $true)][string]$Label,
+          [Parameter(Mandatory = $true)][string]$Path)
+    $verify = Invoke-CfApi GET $Path
+    if ($verify.Status -eq 404) { return }
+    if ($verify.Status -eq 200) {
+        $id = if ($verify.Json -and $verify.Json.result) { $verify.Json.result.id } else { $null }
+        if ($null -eq $id -or [string]::IsNullOrWhiteSpace([string]$id)) { return }
+        Write-Host "ERROR: $Label is still present after its DELETE - aborting before the account delete." -ForegroundColor Red
         exit 1
     }
-    if (@($verify.Json.result | Where-Object { "$($_.id)" -ceq $JobId }).Count -ne 0) {
-        Write-Host "ERROR: logpush job $JobId survived its DELETE - aborting before the account delete." -ForegroundColor Red
-        exit 1
-    }
+    Write-Host "ERROR: could not verify $Label is gone (GET $Path returned HTTP $($verify.Status))." -ForegroundColor Red
+    Write-Host "       Grant read access to this path and re-run; aborting before the account delete." -ForegroundColor Red
+    exit 1
 }
 
 Write-Host ""
@@ -112,31 +117,39 @@ if ($logpush.Ok) {
 } else {
     Write-Host "  logpush jobs to remove       : UNREADABLE (HTTP $($logpush.Status)) - not the same as none"
 }
-Write-Host "  member count                 : $memberCount"
+if ($membersReadable) {
+    Write-Host "  member count                 : $memberCount"
+} else {
+    Write-Host "  member count                 : UNREADABLE (HTTP $($m.Status)) - not the same as zero"
+}
+
+$unreadableInventories = @()
+if (-not $logpush.Ok) { $unreadableInventories += "logpush jobs (HTTP $($logpush.Status))" }
+if (-not $membersReadable) { $unreadableInventories += "account members (HTTP $($m.Status))" }
 
 if (-not $Execute) {
     Write-Host ""
     Write-Host "DRY RUN - nothing was changed."
-    Write-Host "Plan if run with -Execute:"
+    Write-Host "Plan if executed:"
+    Write-Host "  gate. require complete logpush and member inventories before confirmation"
     Write-Host "  gate. type the full account ID to confirm - asked BEFORE any change is made"
     Write-Host "  0. subscriptions: abort if any active subscriptions exist (cancel them"
-    Write-Host "     via billing first - leftover subs are the most common cause of a failed delete)"
-    Write-Host "  1. DELETE logpush jobs: $(if ($logpush.Ids.Count) { $logpush.Ids -join ',' } else { '(none)' })"
-    Write-Host "  2. DELETE /accounts/$AccountId/gateway            (Zero Trust gateway config)"
-    Write-Host "  3. DELETE /accounts/$AccountId/access/organizations"
+    Write-Host "     via billing first - list every page before deciding)"
+    Write-Host "  1. DELETE logpush jobs: $(if ($logpush.Ids.Count) { $logpush.Ids -join ',' } else { '(none)' }); then re-list them and require that none remain"
+    Write-Host "  2. DELETE /accounts/$AccountId/gateway            (Zero Trust gateway config); then read it back and require it to be gone"
+    Write-Host "  3. DELETE /accounts/$AccountId/access/organizations; then read it back and require it to be gone"
     Write-Host "  4. DELETE /accounts/$AccountId                    (permanent)"
-    if (-not $logpush.Ok) {
+    if ($unreadableInventories.Count -gt 0) {
         Write-Host ""
-        Write-Host "NOTE: the logpush inventory could not be read, so step 1 cannot be planned."
-        Write-Host "      -Execute would abort there rather than delete the account with live"
-        Write-Host "      logpush jobs still attached."
+        Write-Host "NOTE: unreadable inventory: $($unreadableInventories -join ', ')."
+        Write-Host "      An execute run would abort before the confirmation prompt."
     }
     exit 0
 }
 
-if (-not $membersReadable) {
-    Write-Host "ERROR: could not list account members (HTTP $($m.Status)) - aborting before any change." -ForegroundColor Red
-    Write-Host "       Do not delete an account whose affected members cannot be shown." -ForegroundColor Red
+if ($unreadableInventories.Count -gt 0) {
+    Write-Host "ERROR: pre-deletion inventory incomplete - aborting before the confirmation prompt." -ForegroundColor Red
+    $unreadableInventories | ForEach-Object { Write-Host "       UNREADABLE: $_" -ForegroundColor Red }
     exit 1
 }
 
@@ -188,7 +201,16 @@ foreach ($jobId in $logpush.Ids) {
     $d = Invoke-CfApi DELETE "/accounts/$AccountId/logpush/jobs/$jobId"
     Write-Host ("    {0}" -f (Get-CfSummary -Response $d))
     Assert-CleanupOk -Label "logpush job $jobId DELETE" -Response $d
-    Assert-LogpushRemoved -JobId "$jobId"
+}
+$logpush = Get-LogpushInventory
+if (-not $logpush.Ok) {
+    Write-Host "ERROR: could not verify logpush cleanup (HTTP $($logpush.Status)) - aborting before the account delete." -ForegroundColor Red
+    exit 1
+}
+if ($logpush.Ids.Count -gt 0) {
+    Write-Host "ERROR: logpush jobs remain after cleanup - aborting before the account delete:" -ForegroundColor Red
+    $logpush.Ids | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    exit 1
 }
 
 Write-Host ""
@@ -196,22 +218,14 @@ Write-Host "== Phase 2: remove Zero Trust gateway configuration =="
 $g = Invoke-CfApi DELETE "/accounts/$AccountId/gateway"
 Write-Host ("  gateway DELETE: {0}" -f (Get-CfSummary -Response $g))
 Assert-CleanupOk -Label "gateway DELETE" -Response $g
-$verifyGateway = Invoke-CfApi GET "/accounts/$AccountId/gateway"
-if ($verifyGateway.Status -ne 404) {
-    Write-Host "ERROR: gateway configuration survived its DELETE (GET returned HTTP $($verifyGateway.Status)) - aborting before the account delete." -ForegroundColor Red
-    exit 1
-}
+Assert-Absent -Label "gateway configuration" -Path "/accounts/$AccountId/gateway"
 
 Write-Host ""
 Write-Host "== Phase 3: remove Access organization =="
 $a = Invoke-CfApi DELETE "/accounts/$AccountId/access/organizations"
 Write-Host ("  Access organization DELETE: {0}" -f (Get-CfSummary -Response $a))
 Assert-CleanupOk -Label "Access organization DELETE" -Response $a
-$verifyAccess = Invoke-CfApi GET "/accounts/$AccountId/access/organizations"
-if ($verifyAccess.Status -ne 404) {
-    Write-Host "ERROR: Access organization survived its DELETE (GET returned HTTP $($verifyAccess.Status)) - aborting before the account delete." -ForegroundColor Red
-    exit 1
-}
+Assert-Absent -Label "Access organization" -Path "/accounts/$AccountId/access/organizations"
 
 Write-Host ""
 Write-Host "== Phase 4: delete the account (point of no return) =="

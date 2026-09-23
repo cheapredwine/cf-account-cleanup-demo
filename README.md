@@ -53,9 +53,10 @@ cp config.example.sh config.sh
 |---|---|
 | `precheck.sh` (read-only) | Account Settings:Read, Zone:Read, Logpush:Read, Zero Trust:Read, Memberships:Read, plus billing read for the subscriptions section |
 | `leave-account.sh` | Membership:Read, Membership:Edit |
-| `delete-account.sh --execute` | Account Settings:Write, Logpush:Read, Logpush:Edit, Zero Trust:Edit, plus tenant-admin authority over the account |
+| `delete-account.sh --execute` | Account Settings:Read + Write, Zone:Read, Account Members:Read, Logpush:Read + Edit, Zero Trust:Read + Edit (Gateway and Access), billing read for the subscription gate, plus tenant-admin authority over the account |
 
 A missing permission does **not** degrade quietly: any section or inventory the credential cannot read is reported as `UNREADABLE`, and `--execute` aborts rather than treating "cannot see" as "nothing there". Grant the permissions above or expect the run to stop.
+The reads are required because the run refuses to act on an inventory it cannot fully list and verifies every cleanup phase with a follow-up read.
 
 The tenant-level deletion flow per the docs uses the **Global API Key**; an API token works if it belongs to the tenant admin user.
 
@@ -96,21 +97,22 @@ bash/leave-account.sh
 
 ```bash
 bash/delete-account.sh            # DRY RUN (default): shows the plan, changes nothing
-bash/delete-account.sh --execute  # real run: typed confirmation, then cleanup + deletion
+bash/delete-account.sh --execute  # real run: complete inventory, typed confirmation, then cleanup + deletion
 ```
 
 What `--execute` does, in order:
-1. **Typed confirmation, before any change** — prints the inventory of what will be destroyed, then requires the full account ID to be typed at an interactive terminal. Anything else aborts with nothing changed.
-2. Subscription gate — aborts if any active subscriptions are visible (cancel via billing first), and also aborts if the subscription list cannot be read
-3. Deletes all Logpush jobs found on the account — aborts if the inventory cannot be read
-4. Deletes the Zero Trust gateway configuration
-5. Deletes the Access organization
-6. Deletes the account
-7. Verifies deletion (expects HTTP 403/404 on a follow-up GET; exits non-zero otherwise)
+1. **Inventory completeness check** — aborts before the confirmation prompt if the Logpush or member inventory cannot be read.
+2. **Typed confirmation, before any change** — prints the inventory of what will be destroyed, then requires the full account ID to be typed at an interactive terminal. Anything else aborts with nothing changed.
+3. Subscription gate — lists every page, then aborts if any active subscriptions are visible (cancel via billing first) or the list cannot be read.
+4. Deletes all Logpush jobs, then re-lists every page and requires none remain.
+5. Deletes the Zero Trust gateway configuration, then reads it back and requires it to be gone.
+6. Deletes the Access organization, then reads it back and requires it to be gone.
+7. Deletes the account.
+8. Verifies deletion (expects HTTP 403/404 on a follow-up GET; exits non-zero otherwise).
 
-Steps 3–5 destroy Gateway policies and every Access app and policy in the account, which is why the confirmation comes before them rather than just before step 6.
+Steps 4–6 destroy Gateway policies and every Access app and policy in the account, which is why the confirmation comes before them rather than just before step 7. An unreadable verification read aborts before the account delete.
 
-If the credential genuinely cannot read subscriptions and billing has been checked another way, `BILLING_VERIFIED=1 bash/delete-account.sh --execute` records that decision explicitly and continues past step 2 only.
+If the credential genuinely cannot read subscriptions and billing has been checked another way, `BILLING_VERIFIED=1 bash/delete-account.sh --execute` records that decision explicitly and continues past step 3 only.
 
 ### PowerShell equivalent (Windows / `pwsh` 7+)
 
@@ -130,10 +132,11 @@ powershell/delete-account.ps1 -Execute             # real run, typed account ID 
 - **Duplicate names abort** — account names are not unique in Cloudflare; if two accounts share the exact target name, the scripts list both IDs and refuse to guess rather than acting on the first match
 - **Dry-run default** on the deletion script; `--execute` / `-Execute` is the explicit opt-in, and an unrecognised argument is an error rather than a silent dry run
 - **Typed confirmation before the first mutation, interactive-only** — `LEAVE` for the reversible operation, the full account ID for the irreversible one; the ID is asked before the cleanup phases, not after them; piped/redirected stdin is rejected (bash reads `/dev/tty`, PowerShell checks `[Console]::IsInputRedirected`)
-- **"Cannot see" is never "nothing there"** — an unreadable zone, logpush, gateway, Access, subscription or member listing is reported as `UNREADABLE` and stops an `--execute` run; a 403 is never rendered as "none"
-- **No pagination truncation** — all list endpoints fetch every page; a failed page aborts instead of silently capping at 50 items
+- **"Cannot see" is never "nothing there"** — an unreadable zone, logpush, gateway, Access, subscription or member listing is reported as `UNREADABLE`; unreadable Logpush or member inventory aborts before the confirmation prompt, and a 403 is never rendered as "none"
+- **No pagination truncation** — all list endpoints, including subscriptions, fetch every page; a failed page aborts instead of silently capping at 50 items
 - **Cleanup-phase assertions** — every pre-delete cleanup phase must return 200/404 *and* must not report `success: false` on a 200, or the run aborts before the account delete
-- **Verification steps** after every mutation, with a non-zero exit when the resource is still there
+- **Per-phase verification** — Logpush is re-listed and must be empty; Gateway and Access are read back and must be absent before account deletion
+- **Post-delete verification** — the account is read back after deletion, with a non-zero exit when it remains readable
 - **Credentials stay out of `ps`** — the bash port passes auth headers to curl on stdin (`curl -K -`) instead of the command line
 - **Read-only preflight** shares exactly what will be destroyed, before anything runs
 
