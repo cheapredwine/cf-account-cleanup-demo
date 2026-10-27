@@ -1,5 +1,10 @@
 # Cloudflare Account Removal Scripts
 
+> ⚠️ **NOT OFFICIAL CLOUDFLARE.** Not affiliated with or endorsed by Cloudflare, Inc.
+> NO WARRANTIES, EXPRESS OR IMPLIED. Effectively untested demo code — read everything
+> and dry-run before you run. You assume all risk. See [DISCLAIMER.md](./DISCLAIMER.md).
+
+
 Demo scripts for safely removing a Cloudflare account via the API — with a read-only preflight, a dry-run-by-default deletion flow, and a typed confirmation before anything destructive runs.
 
 > **Read this first.** There are two very different operations, and choosing the wrong one is either wasted work or permanent data loss. Start with `bash/precheck.sh` and review its output before running anything else.
