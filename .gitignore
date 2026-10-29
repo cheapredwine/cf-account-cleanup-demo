@@ -1,2 +1,5 @@
-config.sh
-config.ps1
+# Real credential files — see the tracked *.example stubs
+bash/config.sh
+powershell/config.ps1
+.env
+.DS_Store
